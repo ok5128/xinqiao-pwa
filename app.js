@@ -439,24 +439,63 @@ function canEditCurrentPage() {
 }
 
 
+/* ── 语音合成（speechSynthesis）预热与缓存 ── */
+let _zhVoices = [];
+let _speechWarmed = false;
+
+function _preloadVoices() {
+  if (!("speechSynthesis" in window)) return;
+  const all = window.speechSynthesis.getVoices();
+  _zhVoices = all.filter((v) => /zh|cmn|chinese|mandarin/i.test(v.lang));
+}
+
+/* 首次用户交互时调用，解锁 iOS Safari 的 speechSynthesis */
+function _warmUpSpeech() {
+  if (_speechWarmed || !("speechSynthesis" in window)) return;
+  _speechWarmed = true;
+  _preloadVoices();
+  /* 用一个静音utterance激活引擎（iOS必须从用户手势内触发一次speak） */
+  const warm = new SpeechSynthesisUtterance("");
+  warm.volume = 0.01;
+  window.speechSynthesis.speak(warm);
+}
+
+if ("speechSynthesis" in window) {
+  _preloadVoices();
+  window.speechSynthesis.addEventListener("voiceschanged", _preloadVoices);
+}
+
 function speakText(text) {
   if (!text) return;
   _stopLipSync?.();
 
-  /* 浏览器 speechSynthesis（壳APP阶段替换为系统原生TTS） */
   if (!("speechSynthesis" in window)) return;
+
+  /* iOS Safari: 某些版本在speak后约15秒会自动暂停，resume可恢复 */
   window.speechSynthesis.cancel();
+  window.speechSynthesis.resume();
+
   const utterance = new SpeechSynthesisUtterance(text);
-  const voices = window.speechSynthesis.getVoices();
-  const zhVoice = voices.find((v) => /^zh[-_]/i.test(v.lang))
-    || voices.find((v) => /chinese|mandarin|xiaoxiao|xiaoyi|tingting|huihui/i.test(v.name));
-  if (zhVoice) utterance.voice = zhVoice;
+  /* 优先使用缓存的中文语音 */
+  const voices = _zhVoices.length ? _zhVoices : window.speechSynthesis.getVoices().filter((v) => /zh|cmn|chinese|mandarin/i.test(v.lang));
+  if (voices.length) utterance.voice = voices[0];
   utterance.lang = "zh-CN";
   utterance.rate = 0.96;
   utterance.pitch = 1.02;
+  utterance.volume = 1;
+
   /* 口型同步 */
   _startSimpleLipSync();
-  utterance.onend = () => { _stopLipSync?.(); };
+
+  /* iOS 长文本中断修复：定时resume */
+  const _resumeTimer = setInterval(() => {
+    if (!window.speechSynthesis.speaking) { clearInterval(_resumeTimer); return; }
+    window.speechSynthesis.resume();
+  }, 5000);
+
+  utterance.onend = () => { clearInterval(_resumeTimer); _stopLipSync?.(); };
+  utterance.onerror = (e) => { clearInterval(_resumeTimer); console.warn("TTS error:", e); _stopLipSync?.(); };
+
   window.speechSynthesis.speak(utterance);
 }
 
@@ -858,6 +897,12 @@ function renderActiveSurface() {
   if (isDigitalHuman) {
     renderDigitalHumanChat();
     initLive2D();
+    /* 进入数字分身时自动播报最近一条收到的消息，验证TTS可用 */
+    const dhMessages = chatThreads["digital-human"] || [];
+    const lastIncoming = [...dhMessages].reverse().find((m) => m.incoming);
+    if (lastIncoming?.text) {
+      setTimeout(() => speakText(lastIncoming.text), 600);
+    }
   } else if (isSystemPage) {
     renderNotifications();
     destroyLive2D();
@@ -1722,10 +1767,15 @@ function isVoiceHotZoneEvent(event) {
   return Boolean(event.target.closest(".composer-area"));
 }
 
+/* 全局：首次交互解锁 speechSynthesis（iOS Safari必须） */
+document.addEventListener("pointerdown", () => _warmUpSpeech(), { once: true });
+document.addEventListener("click", () => _warmUpSpeech(), { once: true });
+
 composerArea.addEventListener("pointerdown", (event) => {
   if (!isVoiceHotZoneEvent(event)) return;
   if (textInputMode) return;
   if (event.pointerType === "mouse" && event.button !== 0) return;
+  _warmUpSpeech();
   event.stopPropagation();
   event.preventDefault();
   pressStartedAt = performance.now();
@@ -1798,6 +1848,7 @@ async function sendText() {
     messageInput.focus();
     return;
   }
+  _warmUpSpeech();
   addChatBubble({ text });
   messageInput.value = "";
   exitTextInputMode();
