@@ -473,6 +473,61 @@ let audioStream = null;
 let mediaRecorder = null;
 let audioChunks = [];
 
+/* ── 语音管线 (离线 ASR+TTS) ── */
+const voiceEngine = (() => {
+  let worker = null;
+  let nextId = 1;
+  const pending = new Map();
+
+  function post(type, payload = {}) {
+    if (!worker) return Promise.reject(new Error("语音引擎未初始化"));
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      worker.postMessage({ id, type, payload }, payload.transfer || []);
+    });
+  }
+
+  function handleMessage(event) {
+    const msg = event.data || {};
+    const job = pending.get(msg.id);
+    if (!job) {
+      /* 异步回调 (进度等) */
+      if (msg.type === "loadProgress") {
+        const { stage, progress } = msg.payload || {};
+        if (stage === "asr") realChatStatus.voiceAsrProgress = progress;
+        if (stage === "tts") realChatStatus.voiceTtsProgress = progress;
+        refreshRealChatStatus();
+      }
+      return;
+    }
+    pending.delete(msg.id);
+    if (msg.type === "error") {
+      job.reject(new Error(msg.payload?.message || "语音引擎错误"));
+    } else {
+      job.resolve(msg.payload);
+    }
+  }
+
+  function init() {
+    if (!("Worker" in window)) return;
+    worker = new Worker("./wasm/xinqiao-voice-worker.js", { type: "module" });
+    worker.addEventListener("message", handleMessage);
+    worker.addEventListener("error", () => { worker = null; });
+    post("init");
+    /* 后台静默加载模型 */
+    post("loadASR");
+    post("loadTTS");
+  }
+
+  return {
+    init,
+    transcribe: (audio, sampleRate) => post("transcribe", { audio, sampleRate, transfer: [audio.buffer] }),
+    synthesize: (text, voice, speed, outputSampleRate) => post("synthesize", { text, voice, speed, outputSampleRate }),
+    getStatus: () => post("getStatus"),
+  };
+})();
+
 const moduleLayoutByRole = {};
 
 const xinqiaoEngine = (() => {
@@ -560,13 +615,44 @@ function canEditCurrentPage() {
   return editableRoles.has(activeRole);
 }
 
-function speakText(text) {
+/* 当前播放的 TTS AudioContext */
+let _ttsAudioCtx = null;
+
+async function speakText(text) {
+  if (!text) return;
+  /* 停止当前播放 */
+  if (_ttsAudioCtx) { _ttsAudioCtx.close?.(); _ttsAudioCtx = null; }
+
+  try {
+    /* 优先用 Kokoro 离线 TTS */
+    const result = await voiceEngine.synthesize(text, "female", 0.95);
+    if (result?.audioBuffer) {
+      const ctx = new AudioContext({ sampleRate: result.sampleRate });
+      _ttsAudioCtx = ctx;
+      const audioBuffer = ctx.createBuffer(1, result.audioBuffer.byteLength / 2, result.sampleRate);
+      const view = new DataView(result.audioBuffer);
+      const channelData = audioBuffer.getChannelData(0);
+      for (let i = 0; i < channelData.length; i++) {
+        channelData[i] = view.getInt16(i * 2, true) / 32768;
+      }
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      source.start(0);
+      source.onended = () => { _ttsAudioCtx = null; };
+      return;
+    }
+  } catch (_) {
+    /* Kokoro 不可用, 回退浏览器 TTS */
+  }
+
+  /* 回退: 浏览器 speechSynthesis */
   if (!("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
   const voices = window.speechSynthesis.getVoices();
-  const zhVoice = voices.find((voice) => /^zh[-_]/i.test(voice.lang))
-    || voices.find((voice) => /chinese|mandarin|xiaoxiao|xiaoyi|tingting|huihui/i.test(voice.name));
+  const zhVoice = voices.find((v) => /^zh[-_]/i.test(v.lang))
+    || voices.find((v) => /chinese|mandarin|xiaoxiao|xiaoyi|tingting|huihui/i.test(v.name));
   if (zhVoice) utterance.voice = zhVoice;
   utterance.lang = "zh-CN";
   utterance.rate = 0.96;
@@ -1669,29 +1755,32 @@ function startRecording() {
   composerArea.classList.remove("show-hint");
   composerArea.classList.add("is-recording");
   document.querySelector(".record-hint").textContent = "正在录音";
-  /* 按下时立即启动系统语音识别，松手时获取结果 */
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (SpeechRecognition && !window._forceWhisper) {
-    try {
-      window._activeRecog = new SpeechRecognition();
-      window._activeRecog.lang = "zh-CN";
-      window._activeRecog.continuous = true;
-      window._activeRecog.interimResults = true;
-      window._activeRecog.maxAlternatives = 1;
-      window._activeRecog._transcript = "";
-      window._activeRecog.onresult = (e) => {
-        let final = "";
-        for (let i = 0; i < e.results.length; i++) {
-          if (e.results[i].isFinal) final += e.results[i][0].transcript;
-        }
-        window._activeRecog._transcript = final || e.results[e.results.length - 1]?.[0]?.transcript || "";
-      };
-      window._activeRecog.onerror = () => {};
-      window._activeRecog.start();
-    } catch (_) { window._activeRecog = null; }
-  } else {
-    startAudioCapture().catch(() => showComposerHint("麦克风权限不可用"));
-  }
+  /* 统一用 MediaRecorder 录音，松手后由 voiceEngine (Whisper) 识别 */
+  startAudioCapture().catch(() => {
+    /* MediaRecorder 不可用时回退浏览器语音识别 */
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      try {
+        window._activeRecog = new SpeechRecognition();
+        window._activeRecog.lang = "zh-CN";
+        window._activeRecog.continuous = true;
+        window._activeRecog.interimResults = true;
+        window._activeRecog.maxAlternatives = 1;
+        window._activeRecog._transcript = "";
+        window._activeRecog.onresult = (e) => {
+          let final = "";
+          for (let i = 0; i < e.results.length; i++) {
+            if (e.results[i].isFinal) final += e.results[i][0].transcript;
+          }
+          window._activeRecog._transcript = final || e.results[e.results.length - 1]?.[0]?.transcript || "";
+        };
+        window._activeRecog.onerror = () => {};
+        window._activeRecog.start();
+      } catch (_) { window._activeRecog = null; }
+    } else {
+      showComposerHint("麦克风权限不可用");
+    }
+  });
   messageInput.blur();
 }
 
@@ -1719,13 +1808,24 @@ async function finishRecording() {
   }
 
   try {
-    /* 获取按下时已启动的语音识别结果 */
-    if (window._activeRecog) {
+    /* 优先: MediaRecorder 录音 → voiceEngine (Whisper) 离线识别 */
+    const audio = await stopAudioCapture();
+    if (audio) {
+      showComposerHint("离线识别中...");
+      const result = await voiceEngine.transcribe(audio, 16000);
+      const transcript = result?.text || "";
+      if (transcript) {
+        addChatBubble({ text: transcript });
+        simulateIncomingReply();
+      } else {
+        addChatBubble({ text: "未识别到文字" });
+      }
+    } else if (window._activeRecog) {
+      /* 回退: 浏览器语音识别结果 */
       showComposerHint("识别完成");
       const recog = window._activeRecog;
       window._activeRecog = null;
       const transcript = await new Promise((resolve) => {
-        /* 先等一小段让最后的结果到达 */
         setTimeout(() => {
           recog.stop();
           resolve(recog._transcript || "");
@@ -1734,22 +1834,20 @@ async function finishRecording() {
       addChatBubble({ text: transcript || "未识别到文字" });
       if (transcript) simulateIncomingReply();
     } else {
-      /* 回退到 whisper（需模型下载） */
-      showComposerHint("whisper-base 识别中");
-      const audio = await stopAudioCapture();
-      if (!audio) {
-        showComposerHint("没有录到语音");
-        return;
-      }
-      const result = await xinqiaoEngine.transcribe({
-        audio,
-        transfer: [audio.buffer]
-      });
-      const transcript = result?.text || "";
-      addChatBubble({ text: transcript || "未识别到文字" });
-      if (transcript) simulateIncomingReply();
+      showComposerHint("没有录到语音");
     }
   } catch (error) {
+    /* voiceEngine 失败, 尝试回退 xinqiaoEngine (老 Worker) */
+    try {
+      const audio2 = await stopAudioCapture();
+      if (audio2) {
+        const result = await xinqiaoEngine.transcribe({ audio: audio2, transfer: [audio2.buffer] });
+        const transcript = result?.text || "";
+        addChatBubble({ text: transcript || "未识别到文字" });
+        if (transcript) simulateIncomingReply();
+        return;
+      }
+    } catch (_) { /* ignore */ }
     addChatBubble({ text: `语音识别失败：${error.message}` });
     showComposerHint("语音识别失败");
   }
@@ -2144,6 +2242,7 @@ dynamicStage.addEventListener("pointercancel", () => {
 
 requestAnimationFrame(() => {
   xinqiaoEngine.init();
+  voiceEngine.init();
   refreshRealChatStatus();
   document.querySelector('[data-role="settings"]')?.scrollIntoView({ inline: "center", block: "nearest" });
   updateContactFocus();
