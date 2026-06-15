@@ -919,14 +919,10 @@ function renderEngineStatusIfVisible() {
 }
 
 async function refreshRealChatStatus() {
-  const checks = await Promise.all([
-    fetch("./vendor/transformers.min.js", { cache: "no-store" }),
-    fetch("./models/qwen2.5-0.5b-instruct/config.json", { cache: "no-store" }),
-    fetch("./models/qwen2.5-0.5b-instruct/onnx/model_int8.onnx", { method: "HEAD", cache: "no-store" })
-  ].map((request) => request.then((response) => response.ok).catch(() => false)));
+  /* 模型通过 HuggingFace 镜像远程加载，不检查本地文件 */
   realChatStatus = {
-    configured: checks.every(Boolean),
-    model: "qwen2.5-0.5b-instruct int8 ONNX",
+    configured: true,
+    model: "Qwen2.5-1.5B-Instruct (远程加载)",
     checking: false
   };
   renderEngineStatusIfVisible();

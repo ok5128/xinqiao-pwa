@@ -14,6 +14,9 @@ import {
 
 env.allowRemoteModels = true;
 env.allowLocalModels = false;
+/* 国内镜像加速，解决 HuggingFace 被墙问题 */
+env.remoteHost = "https://hf-mirror.com";
+env.remotePathTemplate = "{model}/resolve/{revision}/";
 
 /* ── NPC 角色设定 ── */
 const NPC_PROMPTS = {

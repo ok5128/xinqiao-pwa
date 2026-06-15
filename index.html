@@ -8,21 +8,7 @@
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="apple-touch-icon" href="./assets/daoxin-logo.jpg" />
     <link rel="stylesheet" href="./styles.css" />
-    
-    <!-- Hugging Face Transformers.js CDN - 用于端侧 AI 模型 -->
-    <script src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/transformers.min.js"></script>
-    
-    <!-- 可选：预加载提示，用户可以在这里看到加载状态 -->
-    <script>
-      // 检查 transformers.js 是否加载成功
-      window.addEventListener('DOMContentLoaded', function() {
-        if (typeof window.transformers !== 'undefined') {
-          console.log('[心桥] transformers.js CDN 加载成功');
-        } else {
-          console.warn('[心桥] transformers.js CDN 加载失败，Worker 将使用备用方案');
-        }
-      });
-    </script>
+    <!-- transformers.js 由 Worker 内部通过 ES Module 从 CDN 加载，此处不再预加载 -->
   </head>
   <body>
     <main class="app-frame" aria-label="心桥">
