@@ -34,6 +34,10 @@ const moduleState = {
   dreamLite:   { status: "pending", sizeMb: 720, progress: 0, queue: "03" },
 };
 
+/* ── 设备检测：移动端显存不够，跳过 WebGPU ── */
+const IS_MOBILE = /iPad|iPhone|iPod|Android/i.test(typeof navigator !== "undefined" ? navigator.userAgent : "");
+const PREFER_WEBGPU = !IS_MOBILE;
+
 /* ── Pipeline 缓存 ── */
 let transcriberPromise = null;
 let generatorPromise = null;
@@ -53,42 +57,54 @@ function mkProgress(stage) {
   };
 }
 
-function getTranscriber() {
+async function getTranscriber() {
   if (!transcriberPromise) {
     moduleState.whisperBase.status = "loading";
-    transcriberPromise = pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
-      dtype: "q8",
-      device: "webgpu",
-      progress_callback: mkProgress("whisperBase"),
-    }).catch((e) => {
-      console.warn("WebGPU 不可用，回退 WASM:", e.message);
+    transcriberPromise = (async () => {
+      if (PREFER_WEBGPU) {
+        try {
+          return await pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
+            dtype: "q8",
+            device: "webgpu",
+            progress_callback: mkProgress("whisperBase"),
+          });
+        } catch (e) {
+          console.warn("WebGPU 失败，回退 WASM:", e.message);
+        }
+      }
       moduleState.whisperBase.status = "loading";
-      transcriberPromise = pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
+      return await pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
         dtype: "q8",
         device: "wasm",
         progress_callback: mkProgress("whisperBase"),
       });
-    }).catch((e) => { moduleState.whisperBase.status = "error"; transcriberPromise = null; throw e; });
+    })().catch((e) => { moduleState.whisperBase.status = "error"; transcriberPromise = null; throw e; });
   }
   return transcriberPromise;
 }
 
-function getGenerator() {
+async function getGenerator() {
   if (!generatorPromise) {
     moduleState.qwenTiny.status = "loading";
-    generatorPromise = pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
-      dtype: "q4f16",
-      device: "webgpu",
-      progress_callback: mkProgress("qwenTiny"),
-    }).catch((e) => {
-      console.warn("WebGPU 不可用，回退 WASM:", e.message);
+    generatorPromise = (async () => {
+      if (PREFER_WEBGPU) {
+        try {
+          return await pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
+            dtype: "q4f16",
+            device: "webgpu",
+            progress_callback: mkProgress("qwenTiny"),
+          });
+        } catch (e) {
+          console.warn("WebGPU 失败，回退 WASM:", e.message);
+        }
+      }
       moduleState.qwenTiny.status = "loading";
-      generatorPromise = pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
-        dtype: "q4f16",
+      return await pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
+        dtype: "q4",
         device: "wasm",
         progress_callback: mkProgress("qwenTiny"),
       });
-    }).catch((e) => { moduleState.qwenTiny.status = "error"; generatorPromise = null; throw e; });
+    })().catch((e) => { moduleState.qwenTiny.status = "error"; generatorPromise = null; throw e; });
   }
   return generatorPromise;
 }
