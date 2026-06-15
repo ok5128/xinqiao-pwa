@@ -443,6 +443,9 @@ const bindAccountDialog = document.querySelector("#bindAccountDialog");
 const closeBindAccount = document.querySelector("#closeBindAccount");
 const appFrame = document.querySelector(".app-frame");
 const systemInlinePage = document.querySelector("#systemInlinePage");
+const digitalHumanView = document.querySelector("#digitalHumanView");
+const digitalHumanChat = document.querySelector("#digitalHumanChat");
+const live2dCanvas = document.querySelector("#live2dCanvas");
 
 const deleteThreshold = 112;
 const holdToRecordMs = 650;
@@ -625,6 +628,7 @@ async function speakText(text) {
   if (!text) return;
   /* 停止当前播放 */
   if (_ttsAudioCtx) { _ttsAudioCtx.close?.(); _ttsAudioCtx = null; }
+  _stopLipSync?.();
 
   try {
     /* 优先用 Kokoro 离线 TTS */
@@ -640,16 +644,21 @@ async function speakText(text) {
       }
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(ctx.destination);
+      /* 连接分析器用于口型同步 */
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyser.connect(ctx.destination);
       source.start(0);
-      source.onended = () => { _ttsAudioCtx = null; };
+      _startLipSync(analyser);
+      source.onended = () => { _ttsAudioCtx = null; _stopLipSync?.(); };
       return;
     }
   } catch (_) {
     /* Kokoro 不可用, 回退浏览器 TTS */
   }
 
-  /* 回退: 浏览器 speechSynthesis */
+  /* 回退: 浏览器 speechSynthesis + 简单口型 */
   if (!("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
@@ -660,7 +669,43 @@ async function speakText(text) {
   utterance.lang = "zh-CN";
   utterance.rate = 0.96;
   utterance.pitch = 1.02;
+  /* 简单口型：边说边模拟嘴巴开合 */
+  _startSimpleLipSync();
+  utterance.onend = () => { _stopLipSync?.(); };
   window.speechSynthesis.speak(utterance);
+}
+
+/* ── 口型同步辅助 ── */
+let _lipSyncRaf = null;
+
+function _startLipSync(analyser) {
+  const dataArray = new Uint8Array(analyser.frequencyBinCount);
+  function tick() {
+    analyser.getByteFrequencyData(dataArray);
+    let sum = 0;
+    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+    const avg = sum / dataArray.length;
+    const vol = Math.min(1, avg / 120);
+    live2dLipSync(vol);
+    _lipSyncRaf = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function _startSimpleLipSync() {
+  let t = 0;
+  function tick() {
+    t += 0.15;
+    const vol = 0.3 + 0.5 * Math.abs(Math.sin(t * 3.2));
+    live2dLipSync(vol);
+    _lipSyncRaf = requestAnimationFrame(tick);
+  }
+  tick();
+}
+
+function _stopLipSync() {
+  if (_lipSyncRaf) { cancelAnimationFrame(_lipSyncRaf); _lipSyncRaf = null; }
+  live2dLipSync(0);
 }
 
 async function startAudioCapture() {
@@ -1103,16 +1148,23 @@ function renderActiveSurface() {
   stopRecordingFeedback();
   const isSystemPage = activeRole === "settings";
   const isSettingsInlinePage = activeRole === "system-settings-inline";
+  const isDigitalHuman = activeRole === "digital-human";
   document.body.classList.toggle("system-page", isSystemPage);
   document.body.classList.toggle("phone-directory-page", activeRole === "phone-contacts");
   notificationArea.hidden = !isSystemPage;
-  chatArea.hidden = isSystemPage;
+  chatArea.hidden = isSystemPage || isDigitalHuman;
+  digitalHumanView.hidden = !isDigitalHuman;
   systemInlinePage.hidden = !isSettingsInlinePage;
   composerArea.hidden = false;
-  if (isSystemPage) {
+  if (isDigitalHuman) {
+    renderDigitalHumanChat();
+    initLive2D();
+  } else if (isSystemPage) {
     renderNotifications();
+    destroyLive2D();
   } else {
     renderChat();
+    destroyLive2D();
   }
   if (isSettingsInlinePage) {
     renderInlineSettingsPage();
@@ -1266,6 +1318,108 @@ function bindSwipeToSwitch(surface) {
 
 bindSwipeToSwitch(messageList);
 bindSwipeToSwitch(chatArea);
+bindSwipeToSwitch(digitalHumanView);
+
+/* ── Live2D 数字分身 ── */
+let _l2dApp = null;
+let _l2dModel = null;
+let _l2dInitialized = false;
+
+const L2D_MODELS = [
+  { name: "仙狐", url: "https://cdn.jsdelivr.net/gh/Eikanya/Live2d-model@master/Live2D/Senko_Normals/senko.model3.json" },
+];
+
+function initLive2D() {
+  if (_l2dInitialized) return;
+  _l2dInitialized = true;
+
+  if (!window.PIXI || !window.PIXI.live2d || !window.PIXI.live2d.Live2DModel) {
+    console.warn("Live2D SDK 未加载，数字分身功能不可用");
+    return;
+  }
+
+  try {
+    const canvas = live2dCanvas;
+    const rect = digitalHumanView.getBoundingClientRect();
+    const w = rect.width || 360;
+    const h = rect.height || 440;
+
+    _l2dApp = new PIXI.Application({
+      view: canvas,
+      width: w,
+      height: h,
+      backgroundAlpha: 0,
+      resizeTo: digitalHumanView,
+    });
+
+    const Live2DModel = PIXI.live2d.Live2DModel;
+    const modelConfig = L2D_MODELS[0];
+
+    Live2DModel.from(modelConfig.url, { autoInteract: false })
+      .then((model) => {
+        _l2dModel = model;
+        const scale = Math.min(h * 0.85 / model.height, w * 0.9 / model.width);
+        model.scale.set(scale);
+        model.anchor.set(0.5, 0.5);
+        model.x = w / 2;
+        model.y = h * 0.42;
+        _l2dApp.stage.addChild(model);
+        /* 启动 idle 动画 */
+        if (model.internalModel?.motionManager) {
+          try { model.motion("Idle"); } catch (_) {}
+        }
+        console.log("Live2D 模型加载成功:", modelConfig.name);
+      })
+      .catch((err) => {
+        console.warn("Live2D 模型加载失败:", err);
+      });
+  } catch (err) {
+    console.warn("Live2D 初始化失败:", err);
+  }
+}
+
+function destroyLive2D() {
+  if (!_l2dInitialized) return;
+  _l2dInitialized = false;
+  try {
+    if (_l2dModel) {
+      _l2dApp?.stage?.removeChild(_l2dModel);
+      _l2dModel.destroy?.();
+      _l2dModel = null;
+    }
+    if (_l2dApp) {
+      _l2dApp.destroy(true, { children: true });
+      _l2dApp = null;
+    }
+  } catch (_) {}
+}
+
+/* 数字分身 TTS 口型同步 */
+function live2dLipSync(volume) {
+  if (!_l2dModel) return;
+  try {
+    const coreModel = _l2dModel.internalModel?.coreModel;
+    if (coreModel) {
+      const lipParam = coreModel.getParameterIndex("ParamMouthOpenY");
+      if (lipParam >= 0) {
+        coreModel.setParameterValueById("ParamMouthOpenY", Math.min(1, volume));
+      }
+    }
+  } catch (_) {}
+}
+
+/* 渲染数字分身聊天气泡 */
+function renderDigitalHumanChat() {
+  digitalHumanChat.innerHTML = "";
+  const msgs = chatThreads["digital-human"] || [];
+  msgs.forEach((msg) => {
+    const div = document.createElement("div");
+    div.className = `chat-msg ${msg.incoming ? "incoming" : "outgoing"}`;
+    div.textContent = msg.text;
+    digitalHumanChat.appendChild(div);
+  });
+  digitalHumanChat.scrollTop = digitalHumanChat.scrollHeight;
+}
 
 function takeNextNotification() {
   return notificationQueue.shift() || null;
@@ -1472,6 +1626,8 @@ function addChatBubble({ text = "", outgoing = true, autoSpeak = false }) {
   thread.push(message);
   if (activeRole === "settings") {
     renderNotifications();
+  } else if (activeRole === "digital-human") {
+    renderDigitalHumanChat();
   } else {
     renderChat();
   }
@@ -1483,6 +1639,8 @@ function updateIncomingBubble(message, token) {
   message.text = `${message.text || ""}${token}`;
   if (activeRole === "settings") {
     renderNotifications();
+  } else if (activeRole === "digital-human") {
+    renderDigitalHumanChat();
   } else {
     renderChat();
   }
@@ -2022,7 +2180,11 @@ clearAllButton.addEventListener("click", () => {
     return;
   }
   chatThreads[activeRole] = [];
-  renderChat();
+  if (activeRole === "digital-human") {
+    renderDigitalHumanChat();
+  } else {
+    renderChat();
+  }
 });
 
 dynamicCard.addEventListener("click", () => {

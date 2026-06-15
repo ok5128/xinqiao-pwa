@@ -711,8 +711,73 @@ body.system-page .chat-area {
 }
 
 .chat-area[hidden],
-.notification-area[hidden] {
+.notification-area[hidden],
+.digital-human-view[hidden] {
   display: none;
+}
+
+/* ── 数字分身 Live2D 视图 ── */
+.digital-human-view {
+  position: relative;
+  width: 100%;
+  height: 440px;
+  overflow: hidden;
+  background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+  border-radius: 0 0 18px 18px;
+}
+
+.digital-human-view canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.digital-human-chat {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  max-height: 180px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: linear-gradient(transparent, rgba(0,0,0,0.7) 30%);
+  pointer-events: none;
+}
+
+.digital-human-chat::-webkit-scrollbar {
+  display: none;
+}
+
+.digital-human-chat .chat-msg {
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  word-break: break-word;
+  animation: msgFadeIn 0.3s ease;
+}
+
+.digital-human-chat .chat-msg.incoming {
+  align-self: flex-start;
+  background: rgba(255,255,255,0.15);
+  color: #fff;
+  border-bottom-left-radius: 4px;
+}
+
+.digital-human-chat .chat-msg.outgoing {
+  align-self: flex-end;
+  background: rgba(100,140,255,0.3);
+  color: #e0e8ff;
+  border-bottom-right-radius: 4px;
+}
+
+@keyframes msgFadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .chat-message {

@@ -9,6 +9,10 @@
     <link rel="apple-touch-icon" href="./assets/daoxin-logo.jpg" />
     <link rel="stylesheet" href="./styles.css" />
     <!-- transformers.js 由 Worker 内部通过 ES Module 从 CDN 加载，此处不再预加载 -->
+    <!-- Live2D 数字人 -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.3.3/dist/pixi.min.js"></script>
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@naari3/pixi-live2d-display@1.2.5/dist/index.min.js"></script>
   </head>
   <body>
     <main class="app-frame" aria-label="心桥">
@@ -83,6 +87,11 @@
       </section>
 
       <section class="chat-area" id="chatArea" aria-label="聊天消息" hidden></section>
+
+      <section class="digital-human-view" id="digitalHumanView" hidden aria-label="数字分身">
+        <canvas id="live2dCanvas"></canvas>
+        <div class="digital-human-chat" id="digitalHumanChat"></div>
+      </section>
 
       <section class="system-inline-page" id="systemInlinePage" hidden aria-label="系统页面内容"></section>
 
