@@ -341,57 +341,8 @@ const squareFeeds = {
   }
 };
 
-const edgeModelModules = [
-  {
-    id: "whisperBase",
-    title: "whisper-base 语音识别",
-    subtitle: "普通话优先，兼容常见方言口音，当前验证版直接可用",
-    size: "base",
-    required: true
-  },
-  {
-    id: "cosyVoiceLite",
-    title: "CosyVoice-300M Lite",
-    subtitle: "中文与方言友好的端侧 TTS 验证入口",
-    size: "300M",
-    required: true
-  },
-  {
-    id: "qwenTiny",
-    title: "Qwen2.5-0.5B-Instruct",
-    subtitle: "0.5B 参数，量化后约 1GB，负责当前聊天验证",
-    size: "≈1GB",
-    required: true
-  },
-  {
-    id: "dreamLite",
-    title: "字节 DreamLite（即梦Lite）",
-    subtitle: "文生图模型，当前用于动态、技能和愿望背景生成验证",
-    size: "image",
-    required: true
-  },
-  {
-    id: "dialectPack",
-    title: "方言增强包",
-    subtitle: "粤语、川渝、闽南等由后台按地区策略静默配置",
-    size: "280MB",
-    required: false
-  },
-  {
-    id: "chatStandard",
-    title: "标准聊天模型",
-    subtitle: "更强上下文与角色表达，后台静默排队更新",
-    size: "980MB",
-    required: false
-  },
-  {
-    id: "videoAvatar",
-    title: "数字人视频流包",
-    subtitle: "唇形同步、音频处理与视频流核心",
-    size: "1.45GB",
-    required: false
-  }
-];
+/* edgeModelModules 已移除 */
+
 
 const rail = document.querySelector(".contact-rail");
 const notificationArea = document.querySelector("#notificationArea");
@@ -469,145 +420,11 @@ let addMode = "dynamic";
 let activeModuleElement = null;
 let activeModuleWrapper = null;
 let suppressModuleClick = false;
-let edgeRuntime = "initializing";
-let edgeModuleState = {};
-let realChatStatus = { configured: false, model: "qwen2.5-0.5b-instruct int8 ONNX", checking: true };
-let audioStream = null;
-let mediaRecorder = null;
-let audioChunks = [];
 
-/* ── 语音管线 (离线 ASR+TTS) ── */
-const voiceEngine = (() => {
-  let worker = null;
-  let nextId = 1;
-  const pending = new Map();
-
-  function post(type, payload = {}) {
-    if (!worker) return Promise.reject(new Error("语音引擎未初始化"));
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject });
-      worker.postMessage({ id, type, payload }, payload.transfer || []);
-    });
-  }
-
-  function handleMessage(event) {
-    const msg = event.data || {};
-    const job = pending.get(msg.id);
-    if (!job) {
-      /* 异步回调 (进度等) */
-      if (msg.type === "loadProgress") {
-        const { stage, progress } = msg.payload || {};
-        if (stage === "asr") realChatStatus.voiceAsrProgress = progress;
-        if (stage === "tts") realChatStatus.voiceTtsProgress = progress;
-        refreshRealChatStatus();
-      }
-      return;
-    }
-    pending.delete(msg.id);
-    if (msg.type === "error") {
-      job.reject(new Error(msg.payload?.message || "语音引擎错误"));
-    } else {
-      job.resolve(msg.payload);
-    }
-  }
-
-  function init() {
-    if (!("Worker" in window)) return;
-    worker = new Worker("./wasm/xinqiao-voice-worker.js", { type: "module" });
-    worker.addEventListener("message", handleMessage);
-    worker.addEventListener("error", (e) => {
-      console.warn("voiceEngine Worker error:", e.message || e);
-      /* 不再直接 null 掉 worker —— 一次性加载失败不应永久禁用 */
-    });
-    post("init");
-    /* 后台静默加载模型 */
-    post("loadASR").catch(() => {});
-    post("loadTTS").catch(() => {});
-  }
-
-  return {
-    init,
-    transcribe: (audio, sampleRate) => post("transcribe", { audio, sampleRate, transfer: [audio.buffer] }),
-    synthesize: (text, voice, speed, outputSampleRate) => post("synthesize", { text, voice, speed, outputSampleRate }),
-    getStatus: () => post("getStatus"),
-  };
-})();
+/* ── 语音/聊天引擎已移除，PWA用浏览器内置，壳APP用系统原生 ── */
 
 const moduleLayoutByRole = {};
 
-const xinqiaoEngine = (() => {
-  let worker = null;
-  let nextId = 1;
-  const pending = new Map();
-
-  function updateState(payload = {}) {
-    if (payload.runtime) edgeRuntime = payload.runtime;
-    if (payload.modules) edgeModuleState = JSON.parse(JSON.stringify(payload.modules));
-    renderEngineStatusIfVisible();
-  }
-
-  function resolveMessage(message) {
-    const job = pending.get(message.id);
-    updateState(message.payload);
-    if (!job) return;
-    if (message.type === "chatToken") {
-      job.onToken?.(message.payload?.token || "");
-      return;
-    }
-    if (message.type === "chatError") {
-      pending.delete(message.id);
-      job.reject(new Error(message.payload?.message || "本地聊天模型加载失败"));
-      return;
-    }
-    if (message.type === "moduleProgress") return;
-    pending.delete(message.id);
-    job.resolve(message.payload);
-  }
-
-  function fallback(type, payload, handlers) {
-    if (type === "transcribe") {
-      return Promise.reject(new Error("本地 whisper-base 未加载。"));
-    }
-    if (type === "chat") {
-      return Promise.reject(new Error("本地 Qwen2.5 Worker 不可用。"));
-    }
-    return Promise.resolve({ modules: edgeModuleState });
-  }
-
-  function post(type, payload = {}, handlers = {}) {
-    if (!worker) return fallback(type, payload, handlers);
-    const id = nextId++;
-    return new Promise((resolve, reject) => {
-      pending.set(id, { resolve, reject, onToken: handlers.onToken });
-      worker.postMessage({ id, type, payload }, payload.transfer || []);
-    });
-  }
-
-  function init() {
-    if (!("Worker" in window)) {
-      edgeRuntime = "pwa-fallback";
-      renderEngineStatusIfVisible();
-      return;
-    }
-    worker = new Worker("./wasm/xinqiao-engine-worker.js", { type: "module" });
-    worker.addEventListener("message", (event) => resolveMessage(event.data || {}));
-    worker.addEventListener("error", (e) => {
-      console.warn("xinqiaoEngine Worker error:", e.message || e);
-      edgeRuntime = "worker-error";
-      renderEngineStatusIfVisible();
-    });
-    post("init");
-  }
-
-  return {
-    init,
-    transcribe: (payload) => post("transcribe", payload),
-    chat: (payload, handlers) => post("chat", payload, handlers),
-    textToImage: (payload) => post("textToImage", payload),
-    syncPolicy: () => post("syncPolicy")
-  };
-})();
 
 function activeContact() {
   return findContact(activeRole) || contacts[1];
@@ -621,44 +438,12 @@ function canEditCurrentPage() {
   return editableRoles.has(activeRole);
 }
 
-/* 当前播放的 TTS AudioContext */
-let _ttsAudioCtx = null;
 
-async function speakText(text) {
+function speakText(text) {
   if (!text) return;
-  /* 停止当前播放 */
-  if (_ttsAudioCtx) { _ttsAudioCtx.close?.(); _ttsAudioCtx = null; }
   _stopLipSync?.();
 
-  try {
-    /* 优先用 Kokoro 离线 TTS */
-    const result = await voiceEngine.synthesize(text, "female", 0.95);
-    if (result?.audioBuffer) {
-      const ctx = new AudioContext({ sampleRate: result.sampleRate });
-      _ttsAudioCtx = ctx;
-      const audioBuffer = ctx.createBuffer(1, result.audioBuffer.byteLength / 2, result.sampleRate);
-      const view = new DataView(result.audioBuffer);
-      const channelData = audioBuffer.getChannelData(0);
-      for (let i = 0; i < channelData.length; i++) {
-        channelData[i] = view.getInt16(i * 2, true) / 32768;
-      }
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      /* 连接分析器用于口型同步 */
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 256;
-      source.connect(analyser);
-      analyser.connect(ctx.destination);
-      source.start(0);
-      _startLipSync(analyser);
-      source.onended = () => { _ttsAudioCtx = null; _stopLipSync?.(); };
-      return;
-    }
-  } catch (_) {
-    /* Kokoro 不可用, 回退浏览器 TTS */
-  }
-
-  /* 回退: 浏览器 speechSynthesis + 简单口型 */
+  /* 浏览器 speechSynthesis（壳APP阶段替换为系统原生TTS） */
   if (!("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
@@ -669,7 +454,7 @@ async function speakText(text) {
   utterance.lang = "zh-CN";
   utterance.rate = 0.96;
   utterance.pitch = 1.02;
-  /* 简单口型：边说边模拟嘴巴开合 */
+  /* 口型同步 */
   _startSimpleLipSync();
   utterance.onend = () => { _stopLipSync?.(); };
   window.speechSynthesis.speak(utterance);
@@ -708,60 +493,11 @@ function _stopLipSync() {
   live2dLipSync(0);
 }
 
-async function startAudioCapture() {
-  audioChunks = [];
-  audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  mediaRecorder = new MediaRecorder(audioStream);
-  mediaRecorder.addEventListener("dataavailable", (event) => {
-    if (event.data.size) audioChunks.push(event.data);
-  });
-  mediaRecorder.start();
-}
+/* startAudioCapture 已移除，ASR由浏览器SpeechRecognition处理 */
 
-function decodeAudioBlob(blob) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const arrayBuffer = await blob.arrayBuffer();
-      const context = new AudioContext();
-      const decoded = await context.decodeAudioData(arrayBuffer);
-      const source = decoded.getChannelData(0);
-      const targetRate = 16000;
-      const ratio = decoded.sampleRate / targetRate;
-      const length = Math.floor(source.length / ratio);
-      const resampled = new Float32Array(length);
-      for (let index = 0; index < length; index += 1) {
-        resampled[index] = source[Math.floor(index * ratio)] || 0;
-      }
-      await context.close();
-      resolve(resampled);
-    } catch (error) {
-      reject(error);
-    }
-  });
-}
+/* decodeAudioBlob 已移除 */
 
-function stopAudioCapture() {
-  return new Promise((resolve) => {
-    if (!mediaRecorder || mediaRecorder.state === "inactive") {
-      resolve(null);
-      return;
-    }
-    mediaRecorder.addEventListener("stop", async () => {
-      audioStream?.getTracks().forEach((track) => track.stop());
-      audioStream = null;
-      const blob = new Blob(audioChunks, { type: mediaRecorder.mimeType || "audio/webm" });
-      mediaRecorder = null;
-      if (!blob.size) {
-        resolve(null);
-        return;
-      }
-      const audio = await decodeAudioBlob(blob);
-      const rms = Math.sqrt(audio.reduce((sum, sample) => sum + sample * sample, 0) / Math.max(audio.length, 1));
-      resolve(rms > 0.008 ? audio : null);
-    }, { once: true });
-    mediaRecorder.stop();
-  });
-}
+/* stopAudioCapture 已移除 */
 
 function matchesSearch(item, query) {
   if (!query) return true;
@@ -1020,47 +756,10 @@ function renderInlineSettingsPage() {
   renderEngineStatusIfVisible();
 }
 
-function renderEngineStatusIfVisible() {
-  const list = document.querySelector("#edgeModuleList");
-  if (!list) return;
-  list.innerHTML = edgeModelModules.map((module) => {
-    const state = edgeModuleState[module.id] || {};
-    const ready = module.id === "qwenTiny" ? realChatStatus.configured : state.status === "ready" || !state.status;
-    const missing = state.status === "missing";
-    const queue = state.queue || "后台策略";
-    const status = module.id === "qwenTiny"
-      ? realChatStatus.configured
-        ? `本地模型已就绪：${realChatStatus.model}`
-        : realChatStatus.checking
-          ? "正在检查本地模型文件"
-          : "本地模型文件不完整"
-      : missing ? "缺本地模型文件" : ready ? "本地模型已就绪" : "后台静默准备";
-    return `
-      <article class="edge-module-card ${ready ? "is-ready" : ""}">
-        <div>
-          <strong>${module.title}</strong>
-          <span>${module.subtitle}</span>
-          <small>${module.required ? "基础能力" : "地区/设备策略包"} · ${module.size} · ${queue} · ${status}</small>
-        </div>
-        <button type="button" disabled>${missing ? "缺文件" : ready ? "已可用" : "等待"}</button>
-      </article>
-    `;
-  }).join("");
-  const runtime = document.createElement("p");
-  runtime.className = "edge-runtime-line";
-  runtime.textContent = `运行层：${edgeRuntime} · 当前验证版本地 ASR 与聊天可用，正式版后台下发地区策略，壳与 PWA 不暴露用户选择入口。`;
-  list.appendChild(runtime);
-}
+/* renderEngineStatusIfVisible 已移除 */
 
-async function refreshRealChatStatus() {
-  /* 模型通过 HuggingFace 镜像远程加载，不检查本地文件 */
-  realChatStatus = {
-    configured: true,
-    model: "Qwen2.5-1.5B-Instruct (远程加载)",
-    checking: false
-  };
-  renderEngineStatusIfVisible();
-}
+
+/* refreshRealChatStatus 已移除 */
 
 function feedFor(role = activeRole) {
   const contact = findContact(role);
@@ -1349,12 +1048,13 @@ async function initLive2D() {
     const w = rect.width || 360;
     const h = rect.height || 440;
 
-    /* PixiJS v7: 构造函数直接接受参数 */
+    /* PixiJS v7: 透明背景，只显示角色主体 */
     _l2dApp = new PIXI.Application({
       view: live2dCanvas,
       width: w,
       height: h,
       backgroundAlpha: 0,
+      backgroundColor: 0x000000,
       resizeTo: digitalHumanView,
     });
 
@@ -1374,6 +1074,8 @@ async function initLive2D() {
         if (model.internalModel?.motionManager) {
           try { model.motion("Idle"); } catch (_) {}
         }
+        /* 注册口型驱动 ticker */
+        _l2dApp.ticker.add(_l2dTickerFn);
         console.log("Live2D 模型加载成功:", modelConfig.name);
       })
       .catch((err) => {
@@ -1390,6 +1092,7 @@ function destroyLive2D() {
   if (!_l2dInitialized) return;
   _l2dInitialized = false;
   try {
+    if (_l2dApp) { _l2dApp.ticker.remove(_l2dTickerFn); }
     if (_l2dModel) {
       _l2dApp?.stage?.removeChild(_l2dModel);
       _l2dModel.destroy?.();
@@ -1400,18 +1103,23 @@ function destroyLive2D() {
       _l2dApp = null;
     }
   } catch (_) {}
+  _l2dLipValue = 0;
 }
 
 /* 数字分身 TTS 口型同步 */
+let _l2dLipValue = 0;
+
 function live2dLipSync(volume) {
+  _l2dLipValue = Math.min(1, Math.max(0, volume));
+}
+
+/* 每帧驱动口型参数 — 绕过 motionManager 的覆盖 */
+function _l2dTickerFn() {
   if (!_l2dModel) return;
   try {
     const coreModel = _l2dModel.internalModel?.coreModel;
-    if (coreModel) {
-      const lipParam = coreModel.getParameterIndex("ParamMouthOpenY");
-      if (lipParam >= 0) {
-        coreModel.setParameterValueById("ParamMouthOpenY", Math.min(1, volume));
-      }
+    if (coreModel && coreModel.setParameterValueById) {
+      coreModel.setParameterValueById("ParamMouthOpenY", _l2dLipValue);
     }
   } catch (_) {}
 }
@@ -1657,6 +1365,8 @@ function updateIncomingBubble(message, token) {
 function finishIncomingBubble(message) {
   if (activeRole === "settings") {
     renderNotifications({ animateNew: true });
+  } else if (activeRole === "digital-human") {
+    renderDigitalHumanChat();
   } else {
     renderChat();
   }
@@ -1665,35 +1375,21 @@ function finishIncomingBubble(message) {
 
 async function runEngineDemo(kind) {
   if (kind === "asr") {
-    showComposerHint("请按住底部说话测试 whisper-base");
+    showComposerHint("按住底部说话，使用系统语音识别");
     return;
   }
-
   if (kind === "tts") {
-    speakText("当前使用系统中文语音播放。CosyVoice 本地模型文件接入后会替换这里。");
-    showComposerHint("系统中文 TTS 已播放");
+    speakText("当前使用系统语音播放。");
+    showComposerHint("系统 TTS 已播放");
     return;
   }
-
   if (kind === "chat") {
-    addChatBubble({ text: "请用 Qwen2.5 帮我测试当前心桥聊天。" });
+    addChatBubble({ text: "测试聊天" });
     simulateIncomingReply();
-    showComposerHint("Qwen2.5 正在回复");
     return;
   }
-
   if (kind === "image") {
-    const feed = ensureFeed();
-    const result = await xinqiaoEngine.textToImage({
-      prompt: "心桥里一个温暖的 AI 连接场景",
-      mode: "dynamic"
-    });
-    feed.items.unshift({
-      title: result?.caption || "本地图像占位",
-      image: result?.image || "./assets/preview-app-intelligence.jpg"
-    });
-    renderDynamicPreview();
-    showComposerHint("DreamLite 模型文件待接入");
+    showComposerHint("文生图功能即将上线");
   }
 }
 
@@ -1712,18 +1408,14 @@ async function simulateIncomingReply() {
   const role = activeRole;
   const lastOutgoing = [...(chatThreads[role] || [])].reverse().find((message) => !message.incoming);
   const text = lastOutgoing?.text || "";
-  const incoming = addChatBubble({ text: "本地 Qwen2.5 正在加载并生成...", outgoing: false });
+  const incoming = addChatBubble({ text: "正在思考...", outgoing: false });
 
-  try {
-    incoming.text = "";
-    await xinqiaoEngine.chat({ role, text }, {
-      onToken: (token) => updateIncomingBubble(incoming, token)
-    });
-  } catch (error) {
-    incoming.text = `真实聊天模型未连接：${error.message}`;
-    finishIncomingBubble(incoming);
-    return;
-  }
+  /* 聊天模型待接入（壳APP阶段使用云端API） */
+  incoming.text = "聊天功能即将上线";
+  finishIncomingBubble(incoming);
+  return;
+
+  /* 聊天引擎待接入 */
 
   if (role === "system-search-inline") {
     const results = searchResultItems(text);
@@ -1902,7 +1594,7 @@ async function generateDynamic() {
   const prompt = dynamicPrompt.value.trim();
   generateDynamicButton.disabled = true;
   generateDynamicButton.textContent = "模型生成中...";
-  const imageResult = await xinqiaoEngine.textToImage({ prompt, mode: addMode });
+  /* textToImage 待接入 */
   const generatedImage = imageResult?.image || "./assets/preview-app-intelligence.jpg";
   const generatedCaption = imageResult?.caption || prompt;
   if (addMode === "dynamic") {
@@ -1954,7 +1646,7 @@ function startRecording() {
   composerArea.classList.add("is-recording");
   document.querySelector(".record-hint").textContent = "正在录音";
   /* 同时启动 MediaRecorder 和浏览器 SpeechRecognition（双重保障） */
-  startAudioCapture().catch(() => {});
+  /* MediaRecorder已移除，ASR由SpeechRecognition处理 */
   /* 浏览器 SpeechRecognition 作为备选，始终并行启动 */
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (SpeechRecognition) {
@@ -2003,66 +1695,20 @@ async function finishRecording() {
   }
 
   try {
-    /* 优先: MediaRecorder 录音 → voiceEngine (Whisper) 离线识别 */
-    const audio = await stopAudioCapture();
-    if (audio) {
-      try {
-        showComposerHint("离线识别中...");
-        const result = await voiceEngine.transcribe(audio, 16000);
-        const transcript = result?.text || "";
-        if (transcript) {
-          addChatBubble({ text: transcript });
-          simulateIncomingReply();
-        } else {
-          addChatBubble({ text: "未识别到文字" });
-        }
-        return;
-      } catch (voiceErr) {
-        /* voiceEngine 失败, 尝试 xinqiaoEngine 兼容 */
-        console.warn("voiceEngine ASR 失败:", voiceErr.message);
-      }
-      /* 回退: xinqiaoEngine (老 Worker 兼容) */
-      try {
-        const result = await xinqiaoEngine.transcribe({ audio, transfer: [audio.buffer] });
-        const transcript = result?.text || "";
-        if (transcript) {
-          addChatBubble({ text: transcript });
-          simulateIncomingReply();
-          return;
-        }
-      } catch (_) { /* ignore */ }
-      /* 最终回退: 浏览器 SpeechRecognition */
-      if (window._activeRecog) {
-        showComposerHint("识别完成");
-        const recog = window._activeRecog;
-        window._activeRecog = null;
-        const transcript = await new Promise((resolve) => {
-          setTimeout(() => {
-            recog.stop();
-            resolve(recog._transcript || "");
-          }, 400);
-        });
-        addChatBubble({ text: transcript || "未识别到文字" });
-        if (transcript) simulateIncomingReply();
-        return;
-      }
-      addChatBubble({ text: "语音识别不可用，请检查模型加载状态" });
-      showComposerHint("语音识别不可用");
-    } else if (window._activeRecog) {
-      /* 回退: 浏览器语音识别结果 */
+    /* 停止 MediaRecorder */
+    /* 已停止录音流 */
+    /* 使用浏览器 SpeechRecognition（壳APP阶段替换为系统原生ASR） */
+    if (window._activeRecog) {
       showComposerHint("识别完成");
       const recog = window._activeRecog;
       window._activeRecog = null;
       const transcript = await new Promise((resolve) => {
-        setTimeout(() => {
-          recog.stop();
-          resolve(recog._transcript || "");
-        }, 400);
+        setTimeout(() => { recog.stop(); resolve(recog._transcript || ""); }, 400);
       });
       addChatBubble({ text: transcript || "未识别到文字" });
       if (transcript) simulateIncomingReply();
     } else {
-      showComposerHint("没有录到语音");
+      showComposerHint("语音识别不可用");
     }
   } catch (error) {
     addChatBubble({ text: `语音识别失败：${error.message}` });
@@ -2462,9 +2108,7 @@ dynamicStage.addEventListener("pointercancel", () => {
 });
 
 requestAnimationFrame(() => {
-  xinqiaoEngine.init();
-  voiceEngine.init();
-  refreshRealChatStatus();
+  /* Worker引擎已移除 */
   document.querySelector('[data-role="settings"]')?.scrollIntoView({ inline: "center", block: "nearest" });
   updateContactFocus();
   renderActiveSurface();
