@@ -1,10 +1,9 @@
 /**
  * 心桥 Engine Worker — 云端版
- * 模型从 HuggingFace 远程加载，首次打开需下载
- * - STT: onnx-community/whisper-base (automatic-speech-recognition)
- * - Chat: onnx-community/Qwen3-0.6B-ONNX (text-generation, q4f16, 流式)
- * - TTS: 浏览器内置 speechSynthesis（不在 Worker 中）
- * - Image: 后续集成 Stable Diffusion，当前返回提示
+ * - STT: 浏览器内置 SpeechRecognition（不在 Worker）
+ * - Chat: onnx-community/Qwen2.5-1.5B-Instruct (text-generation, 流式)
+ * - TTS: 浏览器内置 speechSynthesis（不在 Worker）
+ * - Image: 后续集成
  */
 
 import {
@@ -18,28 +17,25 @@ env.allowLocalModels = false;
 
 /* ── NPC 角色设定 ── */
 const NPC_PROMPTS = {
-  "npc-yunlan": "名字：云岚。你是温暖的情绪陪伴者，先倾听再帮对方整理情绪。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
-  "npc-qingwu": "名字：青梧。你擅长东方文化，用轻松方式讲诗词典故。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
-  "npc-aluo": "名字：阿洛。你是行动教练，帮对方把目标拆成可执行的三步。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
-  "npc-misheng": "名字：弥生。你是创作灵感伙伴，帮对方扩展画面和故事。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
-  "npc-xinghe": "名字：星河。你是关系连接者，帮对方找到匹配。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
-  agent: "名字：心桥助手。用简洁中文回复。直接回答问题，绝不复读设定、不自我介绍、不提及你是AI。",
+  "npc-yunlan": "你是云岚，温暖的情绪陪伴者。先倾听，再帮对方整理情绪。回复温柔简短，像朋友聊天。",
+  "npc-qingwu": "你是青梧，擅长东方文化的讲解者。用轻松方式讲诗词典故，回复生动有趣。",
+  "npc-aluo": "你是阿洛，行动教练。帮对方把目标拆成可执行的三步，回复简洁有力。",
+  "npc-misheng": "你是弥生，创作灵感伙伴。帮对方扩展画面和故事，回复有画面感。",
+  "npc-xinghe": "你是星河，关系连接者。帮对方找到匹配，回复精准直接。",
+  agent: "你是心桥的AI伙伴，用简短自然的中文回复，像真人聊天。",
 };
-const DEFAULT_SYSTEM = "你是心桥的AI伙伴。直接用简短中文回复对方的话，绝不复读设定、不自我介绍、不提及你是AI。像真人聊天一样自然。";
+const DEFAULT_SYSTEM = "你是心桥的AI伙伴。用简短中文回复对方的话，像真人聊天一样自然。不要自我介绍。";
 
 /* ── 模块状态 ── */
 const moduleState = {
-  whisperBase: { status: "pending", sizeMb: 82, progress: 0, queue: "01" },
-  qwenTiny:    { status: "pending", sizeMb: 488, progress: 0, queue: "02" },
-  dreamLite:   { status: "pending", sizeMb: 720, progress: 0, queue: "03" },
+  qwenChat: { status: "pending", sizeMb: 1100, progress: 0, queue: "01" },
 };
 
-/* ── 设备检测：移动端显存不够，跳过 WebGPU ── */
+/* ── 设备检测 ── */
 const IS_MOBILE = /iPad|iPhone|iPod|Android/i.test(typeof navigator !== "undefined" ? navigator.userAgent : "");
 const PREFER_WEBGPU = !IS_MOBILE;
 
 /* ── Pipeline 缓存 ── */
-let transcriberPromise = null;
 let generatorPromise = null;
 
 function mkProgress(stage) {
@@ -57,84 +53,41 @@ function mkProgress(stage) {
   };
 }
 
-async function getTranscriber() {
-  if (!transcriberPromise) {
-    moduleState.whisperBase.status = "loading";
-    transcriberPromise = (async () => {
-      if (PREFER_WEBGPU) {
-        try {
-          return await pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
-            dtype: "q8",
-            device: "webgpu",
-            progress_callback: mkProgress("whisperBase"),
-          });
-        } catch (e) {
-          console.warn("WebGPU 失败，回退 WASM:", e.message);
-        }
-      }
-      moduleState.whisperBase.status = "loading";
-      return await pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
-        dtype: "q8",
-        device: "wasm",
-        progress_callback: mkProgress("whisperBase"),
-      });
-    })().catch((e) => { moduleState.whisperBase.status = "error"; transcriberPromise = null; throw e; });
-  }
-  return transcriberPromise;
-}
-
 async function getGenerator() {
   if (!generatorPromise) {
-    moduleState.qwenTiny.status = "loading";
+    moduleState.qwenChat.status = "loading";
     generatorPromise = (async () => {
+      /* 桌面端优先 WebGPU（快），移动端直接 WASM（省显存） */
       if (PREFER_WEBGPU) {
         try {
-          return await pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
+          return await pipeline("text-generation", "onnx-community/Qwen2.5-1.5B-Instruct", {
             dtype: "q4f16",
             device: "webgpu",
-            progress_callback: mkProgress("qwenTiny"),
+            progress_callback: mkProgress("qwenChat"),
           });
         } catch (e) {
           console.warn("WebGPU 失败，回退 WASM:", e.message);
         }
       }
-      moduleState.qwenTiny.status = "loading";
-      return await pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
+      moduleState.qwenChat.status = "loading";
+      return await pipeline("text-generation", "onnx-community/Qwen2.5-1.5B-Instruct", {
         dtype: "q4",
         device: "wasm",
-        progress_callback: mkProgress("qwenTiny"),
+        progress_callback: mkProgress("qwenChat"),
       });
-    })().catch((e) => { moduleState.qwenTiny.status = "error"; generatorPromise = null; throw e; });
+    })().catch((e) => { moduleState.qwenChat.status = "error"; generatorPromise = null; throw e; });
   }
   return generatorPromise;
 }
 
-/* ── 语音识别 ── */
-async function transcribeAudio(id, payload) {
-  try {
-    const pipe = await getTranscriber();
-    const audio = payload.audio || payload.transfer;
-    const result = await pipe(audio, { language: "zh", task: "transcribe" });
-    self.postMessage({ id, type: "transcript", payload: { text: result.text || "" } });
-  } catch (e) {
-    self.postMessage({ id, type: "chatError", payload: { message: `语音识别失败：${e.message}` } });
-  }
-}
-
-/* ── 输出清洗：去掉模型可能回显的设定内容 ── */
+/* ── 输出清洗 ── */
 const LEAK_PATTERNS = [
   /你是[云青阿弥星心][岚梧洛生河桥].{0,30}/g,
   /名字[：:][云青阿弥星心][岚梧洛生河桥].{0,20}/g,
-  /绝不[复读自我].{0,15}/g,
-  /不提及你是AI/g,
-  /直接回复对方说的话/g,
 ];
 
 function cleanOutput(text) {
   let out = text;
-  out = out.replace(/<think>[\s\S]*?<\/think>/g, "");
-  out = out.replace(/<think>[\s\S]*/g, "");
-  out = out.replace(/<\/think>/g, "");
   for (const p of LEAK_PATTERNS) {
     out = out.replace(p, "");
   }
@@ -150,10 +103,9 @@ async function streamChat(id, payload) {
     const systemPrompt = NPC_PROMPTS[role] || DEFAULT_SYSTEM;
     const messages = [
       { role: "system", content: systemPrompt },
-      { role: "user", content: text + " /no_think" },
+      { role: "user", content: text },
     ];
 
-    /* 流式缓冲，用于过滤泄露 */
     let buffer = "";
     let sentLen = 0;
 
@@ -172,7 +124,7 @@ async function streamChat(id, payload) {
     });
 
     const output = await pipe(messages, {
-      max_new_tokens: 256,
+      max_new_tokens: 512,
       do_sample: true,
       temperature: 0.7,
       top_p: 0.9,
@@ -197,17 +149,19 @@ async function streamChat(id, payload) {
   }
 }
 
+/* ── 语音识别（已改用浏览器内置，这里保留兼容） ── */
+async function transcribeAudio(id, payload) {
+  self.postMessage({ id, type: "transcript", payload: { text: "" } });
+}
+
 /* ── 文生图 ── */
 function generateImage(id, payload) {
   const prompt = String(payload.prompt || "").trim();
   self.postMessage({
-    id,
-    type: "imageDone",
+    id, type: "imageDone",
     payload: {
       image: "",
-      caption: prompt
-        ? `「${prompt}」— 文生图功能需要 WebGPU，后续版本将集成 Stable Diffusion Turbo。`
-        : "文生图功能需要 WebGPU，后续版本将集成。",
+      caption: prompt ? `「${prompt}」— 文生图功能后续版本集成。` : "文生图功能后续版本集成。",
       model: "pending",
     },
   });
@@ -218,10 +172,9 @@ self.addEventListener("message", (event) => {
   const { id, type, payload = {}, transfer } = event.data || {};
   switch (type) {
     case "init":
-      self.postMessage({ id, type: "ready", payload: { modules: moduleState, runtime: "cloud-tjs-3.8.1" } });
+      self.postMessage({ id, type: "ready", payload: { modules: moduleState, runtime: "cloud-qwen2.5-1.5b" } });
       break;
     case "transcribe":
-      if (transfer) payload.audio = transfer;
       transcribeAudio(id, payload);
       break;
     case "chat":
