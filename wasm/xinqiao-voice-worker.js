@@ -10,7 +10,6 @@
 import {
   pipeline,
   env,
-  AutomaticSpeechRecognitionOutput,
 } from "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.8.1";
 
 /* 国内镜像 */

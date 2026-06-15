@@ -513,11 +513,14 @@ const voiceEngine = (() => {
     if (!("Worker" in window)) return;
     worker = new Worker("./wasm/xinqiao-voice-worker.js", { type: "module" });
     worker.addEventListener("message", handleMessage);
-    worker.addEventListener("error", () => { worker = null; });
+    worker.addEventListener("error", (e) => {
+      console.warn("voiceEngine Worker error:", e.message || e);
+      /* 不再直接 null 掉 worker —— 一次性加载失败不应永久禁用 */
+    });
     post("init");
     /* 后台静默加载模型 */
-    post("loadASR");
-    post("loadTTS");
+    post("loadASR").catch(() => {});
+    post("loadTTS").catch(() => {});
   }
 
   return {
@@ -586,9 +589,9 @@ const xinqiaoEngine = (() => {
     }
     worker = new Worker("./wasm/xinqiao-engine-worker.js", { type: "module" });
     worker.addEventListener("message", (event) => resolveMessage(event.data || {}));
-    worker.addEventListener("error", () => {
-      edgeRuntime = "worker-error-fallback";
-      worker = null;
+    worker.addEventListener("error", (e) => {
+      console.warn("xinqiaoEngine Worker error:", e.message || e);
+      edgeRuntime = "worker-error";
       renderEngineStatusIfVisible();
     });
     post("init");
@@ -1755,32 +1758,29 @@ function startRecording() {
   composerArea.classList.remove("show-hint");
   composerArea.classList.add("is-recording");
   document.querySelector(".record-hint").textContent = "正在录音";
-  /* 统一用 MediaRecorder 录音，松手后由 voiceEngine (Whisper) 识别 */
-  startAudioCapture().catch(() => {
-    /* MediaRecorder 不可用时回退浏览器语音识别 */
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      try {
-        window._activeRecog = new SpeechRecognition();
-        window._activeRecog.lang = "zh-CN";
-        window._activeRecog.continuous = true;
-        window._activeRecog.interimResults = true;
-        window._activeRecog.maxAlternatives = 1;
-        window._activeRecog._transcript = "";
-        window._activeRecog.onresult = (e) => {
-          let final = "";
-          for (let i = 0; i < e.results.length; i++) {
-            if (e.results[i].isFinal) final += e.results[i][0].transcript;
-          }
-          window._activeRecog._transcript = final || e.results[e.results.length - 1]?.[0]?.transcript || "";
-        };
-        window._activeRecog.onerror = () => {};
-        window._activeRecog.start();
-      } catch (_) { window._activeRecog = null; }
-    } else {
-      showComposerHint("麦克风权限不可用");
-    }
-  });
+  /* 同时启动 MediaRecorder 和浏览器 SpeechRecognition（双重保障） */
+  startAudioCapture().catch(() => {});
+  /* 浏览器 SpeechRecognition 作为备选，始终并行启动 */
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (SpeechRecognition) {
+    try {
+      window._activeRecog = new SpeechRecognition();
+      window._activeRecog.lang = "zh-CN";
+      window._activeRecog.continuous = true;
+      window._activeRecog.interimResults = true;
+      window._activeRecog.maxAlternatives = 1;
+      window._activeRecog._transcript = "";
+      window._activeRecog.onresult = (e) => {
+        let final = "";
+        for (let i = 0; i < e.results.length; i++) {
+          if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        }
+        window._activeRecog._transcript = final || e.results[e.results.length - 1]?.[0]?.transcript || "";
+      };
+      window._activeRecog.onerror = () => {};
+      window._activeRecog.start();
+    } catch (_) { window._activeRecog = null; }
+  }
   messageInput.blur();
 }
 
@@ -1811,15 +1811,48 @@ async function finishRecording() {
     /* 优先: MediaRecorder 录音 → voiceEngine (Whisper) 离线识别 */
     const audio = await stopAudioCapture();
     if (audio) {
-      showComposerHint("离线识别中...");
-      const result = await voiceEngine.transcribe(audio, 16000);
-      const transcript = result?.text || "";
-      if (transcript) {
-        addChatBubble({ text: transcript });
-        simulateIncomingReply();
-      } else {
-        addChatBubble({ text: "未识别到文字" });
+      try {
+        showComposerHint("离线识别中...");
+        const result = await voiceEngine.transcribe(audio, 16000);
+        const transcript = result?.text || "";
+        if (transcript) {
+          addChatBubble({ text: transcript });
+          simulateIncomingReply();
+        } else {
+          addChatBubble({ text: "未识别到文字" });
+        }
+        return;
+      } catch (voiceErr) {
+        /* voiceEngine 失败, 尝试 xinqiaoEngine 兼容 */
+        console.warn("voiceEngine ASR 失败:", voiceErr.message);
       }
+      /* 回退: xinqiaoEngine (老 Worker 兼容) */
+      try {
+        const result = await xinqiaoEngine.transcribe({ audio, transfer: [audio.buffer] });
+        const transcript = result?.text || "";
+        if (transcript) {
+          addChatBubble({ text: transcript });
+          simulateIncomingReply();
+          return;
+        }
+      } catch (_) { /* ignore */ }
+      /* 最终回退: 浏览器 SpeechRecognition */
+      if (window._activeRecog) {
+        showComposerHint("识别完成");
+        const recog = window._activeRecog;
+        window._activeRecog = null;
+        const transcript = await new Promise((resolve) => {
+          setTimeout(() => {
+            recog.stop();
+            resolve(recog._transcript || "");
+          }, 400);
+        });
+        addChatBubble({ text: transcript || "未识别到文字" });
+        if (transcript) simulateIncomingReply();
+        return;
+      }
+      addChatBubble({ text: "语音识别不可用，请检查模型加载状态" });
+      showComposerHint("语音识别不可用");
     } else if (window._activeRecog) {
       /* 回退: 浏览器语音识别结果 */
       showComposerHint("识别完成");
@@ -1837,17 +1870,6 @@ async function finishRecording() {
       showComposerHint("没有录到语音");
     }
   } catch (error) {
-    /* voiceEngine 失败, 尝试回退 xinqiaoEngine (老 Worker) */
-    try {
-      const audio2 = await stopAudioCapture();
-      if (audio2) {
-        const result = await xinqiaoEngine.transcribe({ audio: audio2, transfer: [audio2.buffer] });
-        const transcript = result?.text || "";
-        addChatBubble({ text: transcript || "未识别到文字" });
-        if (transcript) simulateIncomingReply();
-        return;
-      }
-    } catch (_) { /* ignore */ }
     addChatBubble({ text: `语音识别失败：${error.message}` });
     showComposerHint("语音识别失败");
   }
