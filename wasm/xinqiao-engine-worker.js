@@ -18,14 +18,14 @@ env.allowLocalModels = false;
 
 /* ── NPC 角色设定 ── */
 const NPC_PROMPTS = {
-  "npc-yunlan": "你是云岚，一个温暖的情绪陪伴者。你会先倾听，再帮对方整理情绪。回复要温柔简短。",
-  "npc-qingwu": "你是青梧，一个擅长东方文化的讲解者。用轻松的方式讲解诗词典故。回复要生动有趣。",
-  "npc-aluo": "你是阿洛，一个行动教练。帮对方把目标拆成可执行的三步。回复要简洁有力。",
-  "npc-misheng": "你是弥生，一个创作灵感伙伴。帮对方扩展画面和故事。回复要有画面感。",
-  "npc-xinghe": "你是星河，一个关系连接者。帮对方找到人、技能或愿望的匹配。回复要精准直接。",
-  agent: "你是心桥的智能体助手，用简洁的中文回复用户的问题和请求。",
+  "npc-yunlan": "名字：云岚。你是温暖的情绪陪伴者，先倾听再帮对方整理情绪。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
+  "npc-qingwu": "名字：青梧。你擅长东方文化，用轻松方式讲诗词典故。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
+  "npc-aluo": "名字：阿洛。你是行动教练，帮对方把目标拆成可执行的三步。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
+  "npc-misheng": "名字：弥生。你是创作灵感伙伴，帮对方扩展画面和故事。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
+  "npc-xinghe": "名字：星河。你是关系连接者，帮对方找到匹配。直接回复对方说的话，绝不自我介绍、不复读设定、不提及你是AI。",
+  agent: "名字：心桥助手。用简洁中文回复。直接回答问题，绝不复读设定、不自我介绍、不提及你是AI。",
 };
-const DEFAULT_SYSTEM = "你是心桥的AI助手。必须只用简体中文回答，像真人聊天一样简短有温度。";
+const DEFAULT_SYSTEM = "你是心桥的AI伙伴。直接用简短中文回复对方的话，绝不复读设定、不自我介绍、不提及你是AI。像真人聊天一样自然。";
 
 /* ── 模块状态 ── */
 const moduleState = {
@@ -58,7 +58,16 @@ function getTranscriber() {
     moduleState.whisperBase.status = "loading";
     transcriberPromise = pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
       dtype: "q8",
+      device: "webgpu",
       progress_callback: mkProgress("whisperBase"),
+    }).catch((e) => {
+      console.warn("WebGPU 不可用，回退 WASM:", e.message);
+      moduleState.whisperBase.status = "loading";
+      transcriberPromise = pipeline("automatic-speech-recognition", "onnx-community/whisper-base", {
+        dtype: "q8",
+        device: "wasm",
+        progress_callback: mkProgress("whisperBase"),
+      });
     }).catch((e) => { moduleState.whisperBase.status = "error"; transcriberPromise = null; throw e; });
   }
   return transcriberPromise;
@@ -69,7 +78,16 @@ function getGenerator() {
     moduleState.qwenTiny.status = "loading";
     generatorPromise = pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
       dtype: "q4f16",
+      device: "webgpu",
       progress_callback: mkProgress("qwenTiny"),
+    }).catch((e) => {
+      console.warn("WebGPU 不可用，回退 WASM:", e.message);
+      moduleState.qwenTiny.status = "loading";
+      generatorPromise = pipeline("text-generation", "onnx-community/Qwen3-0.6B-ONNX", {
+        dtype: "q4f16",
+        device: "wasm",
+        progress_callback: mkProgress("qwenTiny"),
+      });
     }).catch((e) => { moduleState.qwenTiny.status = "error"; generatorPromise = null; throw e; });
   }
   return generatorPromise;
@@ -87,6 +105,23 @@ async function transcribeAudio(id, payload) {
   }
 }
 
+/* ── 输出清洗：去掉模型可能回显的设定内容 ── */
+const LEAK_PATTERNS = [
+  /你是[云青阿弥星心][岚梧洛生河桥].{0,30}/g,
+  /名字[：:][云青阿弥星心][岚梧洛生河桥].{0,20}/g,
+  /绝不[复读自我].{0,15}/g,
+  /不提及你是AI/g,
+  /直接回复对方说的话/g,
+];
+
+function cleanOutput(text) {
+  let out = text;
+  for (const p of LEAK_PATTERNS) {
+    out = out.replace(p, "");
+  }
+  return out.trim();
+}
+
 /* ── 聊天（流式） ── */
 async function streamChat(id, payload) {
   try {
@@ -99,11 +134,21 @@ async function streamChat(id, payload) {
       { role: "user", content: text },
     ];
 
+    /* 流式缓冲，用于过滤泄露 */
+    let buffer = "";
+    let sentLen = 0;
+
     const streamer = new TextStreamer(pipe.tokenizer, {
       skip_prompt: true,
       skip_special_tokens: true,
       callback_function: (token) => {
-        self.postMessage({ id, type: "chatToken", payload: { token } });
+        buffer += token;
+        const cleaned = cleanOutput(buffer);
+        if (cleaned.length > sentLen) {
+          const newPart = cleaned.slice(sentLen);
+          sentLen = cleaned.length;
+          self.postMessage({ id, type: "chatToken", payload: { token: newPart } });
+        }
       },
     });
 
@@ -112,7 +157,7 @@ async function streamChat(id, payload) {
       do_sample: true,
       temperature: 0.7,
       top_p: 0.9,
-      repetition_penalty: 1.08,
+      repetition_penalty: 1.15,
       streamer,
     });
 
@@ -126,6 +171,7 @@ async function streamChat(id, payload) {
         fullText = String(gen);
       }
     }
+    fullText = cleanOutput(fullText);
     self.postMessage({ id, type: "chatDone", payload: { text: fullText } });
   } catch (e) {
     self.postMessage({ id, type: "chatError", payload: { message: `聊天生成失败：${e.message}` } });
