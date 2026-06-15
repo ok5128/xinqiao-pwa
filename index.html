@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#f7f8fb" />
+    <title>心桥 XinQiao</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./assets/daoxin-logo.jpg" />
+    <link rel="stylesheet" href="./styles.css" />
+    
+    <!-- Hugging Face Transformers.js CDN - 用于端侧 AI 模型 -->
+    <script src="https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.0/dist/transformers.min.js"></script>
+    
+    <!-- 可选：预加载提示，用户可以在这里看到加载状态 -->
+    <script>
+      // 检查 transformers.js 是否加载成功
+      window.addEventListener('DOMContentLoaded', function() {
+        if (typeof window.transformers !== 'undefined') {
+          console.log('[心桥] transformers.js CDN 加载成功');
+        } else {
+          console.warn('[心桥] transformers.js CDN 加载失败，Worker 将使用备用方案');
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <main class="app-frame" aria-label="心桥">
+      <section class="contact-rail" aria-label="心桥入口">
+        <button class="contact-card system-shortcut" type="button" data-role="system-settings-inline" aria-label="系统设置页">
+          <img src="./assets/system-settings.png" alt="" />
+          <span>系统设置</span>
+        </button>
+
+        <button class="contact-card system-shortcut" type="button" data-role="system-search-inline" aria-label="系统搜索页">
+          <img src="./assets/system-search.png" alt="" />
+          <span>系统搜索</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="agent" aria-label="智能体">
+          <img src="./assets/avatar-zhuangzi.jpg" alt="" />
+          <span>智能体</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="wechat" aria-label="微信页面">
+          <img src="./assets/open-wechat.jpg" alt="" />
+          <span>微信</span>
+        </button>
+
+        <button class="contact-card is-active" type="button" data-role="settings" aria-label="系统设置页">
+          <img src="./assets/daoxin-logo.jpg" alt="" />
+          <span aria-hidden="true"></span>
+        </button>
+
+        <button class="contact-card system-contact" type="button" data-role="phone-contacts" aria-label="手机通讯录">
+          <img src="./assets/contact-import.jpg" alt="" />
+          <span>通讯录</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="digital-human" aria-label="数字分身和数字人">
+          <img src="./assets/my-digital-human.jpg" alt="" />
+          <span>数字分身</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="npc-yunlan" aria-label="云岚">
+          <img src="./assets/npc-1.png" alt="" />
+          <span>云岚</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="npc-qingwu" aria-label="青梧">
+          <img src="./assets/npc-2.png" alt="" />
+          <span>青梧</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="npc-aluo" aria-label="阿洛">
+          <img src="./assets/npc-3.png" alt="" />
+          <span>阿洛</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="npc-misheng" aria-label="弥生">
+          <img src="./assets/npc-4.png" alt="" />
+          <span>弥生</span>
+        </button>
+
+        <button class="contact-card" type="button" data-role="npc-xinghe" aria-label="星河">
+          <img src="./assets/npc-5.png" alt="" />
+          <span>星河</span>
+        </button>
+      </section>
+
+      <section class="surface-toolbar" aria-label="消息操作">
+        <button class="clear-all-button" id="clearAllNotifications" type="button" aria-label="清空当前消息">×</button>
+      </section>
+
+      <section class="notification-area" id="notificationArea" aria-label="未读消息">
+        <div class="message-list" id="messageList" aria-label="消息列表"></div>
+      </section>
+
+      <section class="chat-area" id="chatArea" aria-label="聊天消息" hidden></section>
+
+      <section class="system-inline-page" id="systemInlinePage" hidden aria-label="系统页面内容"></section>
+
+      <section class="dynamic-area" aria-label="动态">
+        <div class="dynamic-heading">
+          <h2 id="dynamicTitle">动态</h2>
+          <button class="add-dynamic-button" id="addDynamicButton" type="button" aria-label="添加动态">+</button>
+        </div>
+        <button class="dynamic-card" id="dynamicCard" type="button" aria-label="打开动态">
+          <img id="dynamicThumb" src="./assets/preview-app-intelligence.jpg" alt="" />
+          <span id="dynamicCaption">最新动态</span>
+        </button>
+      </section>
+
+      <section class="square-modules" aria-label="技能和愿望">
+        <article class="square-module" data-module="skill">
+          <div class="square-module-head">
+            <h2>技能</h2>
+            <button class="add-square-button" type="button" data-add-module="skill" aria-label="添加技能">+</button>
+          </div>
+          <button class="square-card" type="button" data-open-module="skill" aria-label="打开技能">
+            <img id="skillThumb" src="./assets/home-cover.jpg" alt="" />
+            <span id="skillCaption">产品课程与服务</span>
+          </button>
+        </article>
+
+        <article class="square-module" data-module="wish">
+          <div class="square-module-head">
+            <h2>愿望</h2>
+            <button class="add-square-button" type="button" data-add-module="wish" aria-label="添加愿望">+</button>
+          </div>
+          <button class="square-card" type="button" data-open-module="wish" aria-label="打开愿望">
+            <img id="wishThumb" src="./assets/wish-cover.jpg" alt="" />
+            <span id="wishCaption">想得到的需求</span>
+          </button>
+        </article>
+      </section>
+
+      <footer class="app-footer">
+        <img src="./assets/daoxin-logo.jpg" alt="" />
+        <span>心AI文化传播版权所有</span>
+      </footer>
+    </main>
+
+    <section class="composer-area" aria-label="发送消息">
+      <div class="record-glow" aria-hidden="true"></div>
+      <div class="record-hint" aria-live="polite">松开发送</div>
+      <div class="text-composer" id="textComposer" hidden>
+        <input id="messageInput" type="text" inputmode="text" autocomplete="off" placeholder="输入文字消息" />
+        <button id="sendTextButton" type="button" aria-label="发送文字">➤</button>
+      </div>
+      <nav class="bottom-input-bar" aria-label="底部输入和导航">
+        <button class="bottom-icon-button keyboard-toggle-button" id="keyboardToggleButton" type="button" aria-label="切换文字输入">
+          <span aria-hidden="true">⌨</span>
+        </button>
+        <button class="voice-home-button" id="composerShell" type="button" aria-label="按住说话">
+          <span>按住说话</span>
+        </button>
+        <button class="bottom-icon-button home-return-button" id="homeReturnButton" type="button" aria-label="返回主页">
+          <span aria-hidden="true">⌂</span>
+        </button>
+      </nav>
+    </section>
+
+    <section class="dynamic-detail" id="dynamicDetail" hidden aria-label="动态详情">
+      <button class="dynamic-back-button" id="dynamicBackButton" type="button" aria-label="返回主页">‹</button>
+      <div class="dynamic-stage" id="dynamicStage">
+        <article class="dynamic-slide" id="dynamicSlide">
+          <img id="dynamicDetailImage" src="./assets/preview-app-intelligence.jpg" alt="" />
+          <div class="dynamic-actions" aria-label="动态操作">
+            <button type="button" data-dynamic-action="like"><span>♡</span><small>点赞</small></button>
+            <button type="button" data-dynamic-action="comment"><span>◎</span><small>评论</small></button>
+            <button type="button" data-dynamic-action="share"><span>↗</span><small>分享</small></button>
+            <button type="button" data-dynamic-action="continue"><span>◇</span><small>续写</small></button>
+            <button type="button" data-dynamic-action="remix"><span>✎</span><small>拍同款</small></button>
+          </div>
+          <div class="dynamic-slide-copy">
+            <strong id="dynamicDetailTitle">最新动态</strong>
+            <span id="dynamicDetailMeta">上滑切换下一条</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="square-detail" id="squareDetail" hidden aria-label="技能愿望详情">
+      <div class="square-stage" id="squareStage">
+        <article class="square-slide">
+          <img id="squareDetailImage" src="./assets/home-cover.jpg" alt="" />
+          <div class="square-slide-copy">
+            <strong id="squareDetailTitle">技能</strong>
+            <span id="squareDetailBody">上下左右滑动切换</span>
+          </div>
+          <button class="respond-button" id="respondButton" type="button">回应</button>
+        </article>
+      </div>
+    </section>
+
+    <dialog class="add-dynamic-dialog" id="addDynamicDialog" aria-labelledby="addDynamicTitle">
+      <div class="add-dynamic-panel">
+        <button class="dialog-close" id="closeAddDynamic" type="button" aria-label="关闭">×</button>
+        <strong id="addDynamicTitle">添加动态</strong>
+        <p>写下你的动态，AI 会根据内容生成相应的图片或视频。</p>
+        <textarea id="dynamicPrompt" placeholder="比如：今天和智能体聊了一个新的想法"></textarea>
+        <button id="generateDynamicButton" type="button">让 AI 生成动态</button>
+      </div>
+    </dialog>
+
+    <dialog class="respond-dialog" id="respondDialog" aria-labelledby="respondTitle">
+      <div class="add-dynamic-panel">
+        <button class="dialog-close" id="closeRespond" type="button" aria-label="关闭">×</button>
+        <strong id="respondTitle">回应</strong>
+        <p id="respondHint">写下你的评论、对接方式，或你可以提供的帮助。</p>
+        <textarea id="respondText" placeholder="说说你的回应..."></textarea>
+        <button id="sendRespondButton" type="button">发送回应</button>
+      </div>
+    </dialog>
+
+    <dialog class="module-menu-dialog" id="moduleMenuDialog" aria-label="模块操作">
+      <div class="module-menu-panel">
+        <button type="button" data-module-menu-action="grow">变大</button>
+        <button type="button" data-module-menu-action="shrink">变小</button>
+        <button class="danger" type="button" data-module-menu-action="delete">删除</button>
+      </div>
+    </dialog>
+
+    <dialog class="bind-account-dialog" id="bindAccountDialog" aria-labelledby="bindAccountTitle">
+      <div class="bind-account-panel">
+        <button class="dialog-close" id="closeBindAccount" type="button" aria-label="关闭">×</button>
+        <strong id="bindAccountTitle">绑定账号</strong>
+        <p>绑定账号可获得积分奖励，并保护你的聊天、动态、技能和愿望数据。</p>
+        <div class="bind-account-options">
+          <button type="button">使用 Apple 登录</button>
+          <button type="button">使用 Google 登录</button>
+          <button type="button">绑定手机</button>
+          <button type="button">绑定邮箱</button>
+        </div>
+      </div>
+    </dialog>
+
+    <section class="comment-sheet" id="commentSheet" hidden aria-label="评论">
+      <div class="comment-panel">
+        <div class="sheet-handle" aria-hidden="true"></div>
+        <strong>评论 7</strong>
+        <div class="comment-list">
+          <p><span>忆只花生酱</span> 她们回来了</p>
+          <p><span>聪穗の油</span> 哈哈哈</p>
+          <p><span>斯沃是苹果</span> 谈的好久没看到这两个小萌物了</p>
+          <p><span>小正哥</span> 超可爱</p>
+        </div>
+        <label class="comment-input">
+          <input type="text" placeholder="说点什么..." />
+        </label>
+      </div>
+    </section>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

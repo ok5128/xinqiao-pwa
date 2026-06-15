@@ -1,0 +1,25 @@
+{
+  "name": "心桥 XinQiao",
+  "short_name": "心桥",
+  "description": "心桥 PWA 原型：原生壳 + PWA 界面层 + Wasm 核心引擎架构验证。",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#061522",
+  "theme_color": "#061522",
+  "icons": [
+    {
+      "src": "../WebPreview/assets/daoxin-logo.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "../WebPreview/assets/daoxin-logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
