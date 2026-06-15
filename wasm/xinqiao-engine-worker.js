@@ -132,6 +132,9 @@ const LEAK_PATTERNS = [
 
 function cleanOutput(text) {
   let out = text;
+  out = out.replace(/<think>[\s\S]*?<\/think>/g, "");
+  out = out.replace(/<think>[\s\S]*/g, "");
+  out = out.replace(/<\/think>/g, "");
   for (const p of LEAK_PATTERNS) {
     out = out.replace(p, "");
   }
@@ -147,7 +150,7 @@ async function streamChat(id, payload) {
     const systemPrompt = NPC_PROMPTS[role] || DEFAULT_SYSTEM;
     const messages = [
       { role: "system", content: systemPrompt },
-      { role: "user", content: text },
+      { role: "user", content: text + " /no_think" },
     ];
 
     /* 流式缓冲，用于过滤泄露 */
