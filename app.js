@@ -1673,9 +1673,27 @@ function startRecording() {
   composerArea.classList.remove("show-hint");
   composerArea.classList.add("is-recording");
   document.querySelector(".record-hint").textContent = "正在录音";
-  /* 系统语音识别在 finishRecording 中启动，只有 whisper 回退时才需要先录音频 */
+  /* 按下时立即启动系统语音识别，松手时获取结果 */
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition || window._forceWhisper) {
+  if (SpeechRecognition && !window._forceWhisper) {
+    try {
+      window._activeRecog = new SpeechRecognition();
+      window._activeRecog.lang = "zh-CN";
+      window._activeRecog.continuous = true;
+      window._activeRecog.interimResults = true;
+      window._activeRecog.maxAlternatives = 1;
+      window._activeRecog._transcript = "";
+      window._activeRecog.onresult = (e) => {
+        let final = "";
+        for (let i = 0; i < e.results.length; i++) {
+          if (e.results[i].isFinal) final += e.results[i][0].transcript;
+        }
+        window._activeRecog._transcript = final || e.results[e.results.length - 1]?.[0]?.transcript || "";
+      };
+      window._activeRecog.onerror = () => {};
+      window._activeRecog.start();
+    } catch (_) { window._activeRecog = null; }
+  } else {
     startAudioCapture().catch(() => showComposerHint("麦克风权限不可用"));
   }
   messageInput.blur();
@@ -1705,21 +1723,17 @@ async function finishRecording() {
   }
 
   try {
-    /* 使用浏览器内置语音识别（系统级，无需下载模型） */
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (SpeechRecognition && !window._forceWhisper) {
-      showComposerHint("系统语音识别中");
-      const transcript = await new Promise((resolve, reject) => {
-        const recog = new SpeechRecognition();
-        recog.lang = "zh-CN";
-        recog.interimResults = false;
-        recog.maxAlternatives = 1;
-        recog.continuous = false;
-        const timer = setTimeout(() => { recog.stop(); reject(new Error("识别超时")); }, 8000);
-        recog.onresult = (e) => { clearTimeout(timer); resolve(e.results[0][0].transcript || ""); };
-        recog.onerror = (e) => { clearTimeout(timer); reject(e); };
-        recog.onend = () => { clearTimeout(timer); };
-        recog.start();
+    /* 获取按下时已启动的语音识别结果 */
+    if (window._activeRecog) {
+      showComposerHint("识别完成");
+      const recog = window._activeRecog;
+      window._activeRecog = null;
+      const transcript = await new Promise((resolve) => {
+        /* 先等一小段让最后的结果到达 */
+        setTimeout(() => {
+          recog.stop();
+          resolve(recog._transcript || "");
+        }, 400);
       });
       addChatBubble({ text: transcript || "未识别到文字" });
       if (transcript) simulateIncomingReply();
