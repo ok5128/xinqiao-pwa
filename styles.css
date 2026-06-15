@@ -502,8 +502,8 @@ img {
 
 .surface-toolbar {
   width: 100%;
-  min-height: 42px;
-  padding: 0 22px 9px;
+  min-height: 32px;
+  padding: 0 22px 4px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -542,7 +542,7 @@ img {
   gap: 10px;
   min-height: 332px;
   max-height: 332px;
-  overflow: visible;
+  overflow: hidden;
   touch-action: none;
 }
 
@@ -692,11 +692,13 @@ img {
   display: grid;
   gap: 12px;
   height: 332px;
-  overflow: visible;
+  overflow: hidden;
   align-content: end;
   padding: 0 18px;
   scrollbar-width: none;
   touch-action: none;
+  /* 顶部裁切：消息不允许越过清除按钮水平线 */
+  clip-path: inset(0 0 0 0);
 }
 
 body.phone-directory-page .chat-area {

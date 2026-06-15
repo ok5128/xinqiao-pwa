@@ -1235,8 +1235,128 @@ function bindPageDragScroll(surface) {
   surface.addEventListener("pointercancel", stop);
 }
 
-bindPageDragScroll(chatArea);
 bindPageDragScroll(messageList);
+
+/* ── 消息列表也支持左右滑动联动头像 ── */
+(function bindMessageRailSync() {
+  let activePointer = null;
+  let lastX = 0;
+  let lastY = 0;
+  let intent = null;
+  const THRESHOLD = 12;
+  const contactCards = () => document.querySelectorAll(".contact-card");
+
+  function stop() { activePointer = null; intent = null; }
+
+  messageList.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button, a, input, textarea, select")) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    activePointer = event.pointerId;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    intent = null;
+    messageList.setPointerCapture?.(event.pointerId);
+  });
+
+  messageList.addEventListener("pointermove", (event) => {
+    if (activePointer !== event.pointerId) return;
+    const dx = lastX - event.clientX;
+    const dy = lastY - event.clientY;
+    if (!intent && Math.hypot(dx, dy) > THRESHOLD) {
+      intent = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+    }
+    if (intent === "h") {
+      rail.scrollLeft += dx;
+      lastX = event.clientX;
+      event.preventDefault();
+    } else if (intent === "v") {
+      appFrame.scrollTop += dy;
+      lastY = event.clientY;
+      event.preventDefault();
+    }
+  });
+
+  messageList.addEventListener("pointerup", (event) => {
+    if (intent === "h") {
+      const railBox = rail.getBoundingClientRect();
+      const center = railBox.left + railBox.width / 2;
+      let closest = null, closestDist = Infinity;
+      contactCards().forEach((card) => {
+        const box = card.getBoundingClientRect();
+        const d = Math.abs(center - (box.left + box.width / 2));
+        if (d < closestDist) { closest = card; closestDist = d; }
+      });
+      if (closest) closest.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+    }
+    stop();
+  });
+  messageList.addEventListener("pointercancel", stop);
+})();
+
+/* ── 聊天区 ↔ 头像列表 左右滑动联动 ── */
+(function bindChatRailSync() {
+  let activePointer = null;
+  let lastX = 0;
+  let lastY = 0;
+  let intent = null; // "h" | "v" | null
+  const THRESHOLD = 12;
+  const contactCards = () => document.querySelectorAll(".contact-card");
+
+  function stop() {
+    activePointer = null;
+    intent = null;
+  }
+
+  chatArea.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button, a, input, textarea, select")) return;
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    activePointer = event.pointerId;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    intent = null;
+    chatArea.setPointerCapture?.(event.pointerId);
+  });
+
+  chatArea.addEventListener("pointermove", (event) => {
+    if (activePointer !== event.pointerId) return;
+    const dx = lastX - event.clientX;
+    const dy = lastY - event.clientY;
+    if (!intent && Math.hypot(dx, dy) > THRESHOLD) {
+      intent = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
+    }
+    if (intent === "h") {
+      /* 水平滑动 → 联动头像列表滚动 */
+      rail.scrollLeft += dx;
+      lastX = event.clientX;
+      event.preventDefault();
+    } else if (intent === "v") {
+      /* 垂直滑动 → 页面纵向滚动 */
+      appFrame.scrollTop += dy;
+      lastY = event.clientY;
+      event.preventDefault();
+    }
+  });
+
+  chatArea.addEventListener("pointerup", (event) => {
+    if (intent === "h") {
+      /* 松手后吸附到最近的头像中心 */
+      const railBox = rail.getBoundingClientRect();
+      const center = railBox.left + railBox.width / 2;
+      let closest = null;
+      let closestDist = Infinity;
+      contactCards().forEach((card) => {
+        const box = card.getBoundingClientRect();
+        const d = Math.abs(center - (box.left + box.width / 2));
+        if (d < closestDist) { closest = card; closestDist = d; }
+      });
+      if (closest) {
+        closest.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+      }
+    }
+    stop();
+  });
+  chatArea.addEventListener("pointercancel", stop);
+})();
 
 function takeNextNotification() {
   return notificationQueue.shift() || null;
