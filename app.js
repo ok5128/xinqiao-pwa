@@ -1329,23 +1329,30 @@ const L2D_MODELS = [
   { name: "仙狐", url: "https://cdn.jsdelivr.net/gh/Eikanya/Live2d-model@master/Live2D/Senko_Normals/senko.model3.json" },
 ];
 
-function initLive2D() {
+async function initLive2D() {
   if (_l2dInitialized) return;
   _l2dInitialized = true;
 
   if (!window.PIXI || !window.PIXI.live2d || !window.PIXI.live2d.Live2DModel) {
     console.warn("Live2D SDK 未加载，数字分身功能不可用");
+    _l2dInitialized = false;
+    return;
+  }
+  if (!window.Live2DCubismCore) {
+    console.warn("CubismCore 运行时未加载，请检查网络");
+    _l2dInitialized = false;
     return;
   }
 
   try {
-    const canvas = live2dCanvas;
     const rect = digitalHumanView.getBoundingClientRect();
     const w = rect.width || 360;
     const h = rect.height || 440;
 
-    _l2dApp = new PIXI.Application({
-      view: canvas,
+    /* PixiJS v8: Application() 无参，init() 异步 */
+    _l2dApp = new PIXI.Application();
+    await _l2dApp.init({
+      canvas: live2dCanvas,
       width: w,
       height: h,
       backgroundAlpha: 0,
@@ -1372,9 +1379,11 @@ function initLive2D() {
       })
       .catch((err) => {
         console.warn("Live2D 模型加载失败:", err);
+        _l2dInitialized = false;
       });
   } catch (err) {
     console.warn("Live2D 初始化失败:", err);
+    _l2dInitialized = false;
   }
 }
 
