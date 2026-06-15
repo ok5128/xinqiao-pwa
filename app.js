@@ -1202,161 +1202,70 @@ document.querySelectorAll(".contact-card").forEach(bindContactCard);
 rail.addEventListener("scroll", scheduleContactFocus, { passive: true });
 window.addEventListener("resize", scheduleContactFocus);
 
-function bindPageDragScroll(surface) {
+/* ── 统一滑动处理：纵向滚页面 / 横向切换联系人 ── */
+function bindSwipeToSwitch(surface) {
   let activePointer = null;
+  let startX = 0;
+  let startY = 0;
   let lastY = 0;
-  let dragging = false;
+  let intent = null; // "h" | "v" | null
+  const INTENT_THRESHOLD = 10;
+  const SWIPE_THRESHOLD = 40;
 
-  const stop = () => {
-    activePointer = null;
-    dragging = false;
-  };
+  function stop() { activePointer = null; intent = null; }
 
   surface.addEventListener("pointerdown", (event) => {
     if (event.target.closest("button, a, input, textarea, select")) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
     activePointer = event.pointerId;
+    startX = event.clientX;
+    startY = event.clientY;
     lastY = event.clientY;
-    dragging = false;
+    intent = null;
     surface.setPointerCapture?.(event.pointerId);
   });
 
   surface.addEventListener("pointermove", (event) => {
     if (activePointer !== event.pointerId) return;
-    const deltaY = lastY - event.clientY;
-    if (!dragging && Math.abs(deltaY) < 4) return;
-    dragging = true;
-    appFrame.scrollTop += deltaY;
-    lastY = event.clientY;
-    event.preventDefault();
-  });
-
-  surface.addEventListener("pointerup", stop);
-  surface.addEventListener("pointercancel", stop);
-}
-
-bindPageDragScroll(messageList);
-
-/* ── 消息列表也支持左右滑动联动头像 ── */
-(function bindMessageRailSync() {
-  let activePointer = null;
-  let lastX = 0;
-  let lastY = 0;
-  let intent = null;
-  const THRESHOLD = 12;
-  const contactCards = () => document.querySelectorAll(".contact-card");
-
-  function stop() { activePointer = null; intent = null; }
-
-  messageList.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button, a, input, textarea, select")) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    activePointer = event.pointerId;
-    lastX = event.clientX;
-    lastY = event.clientY;
-    intent = null;
-    messageList.setPointerCapture?.(event.pointerId);
-  });
-
-  messageList.addEventListener("pointermove", (event) => {
-    if (activePointer !== event.pointerId) return;
-    const dx = lastX - event.clientX;
-    const dy = lastY - event.clientY;
-    if (!intent && Math.hypot(dx, dy) > THRESHOLD) {
+    const dx = startX - event.clientX;
+    const dy = startY - event.clientY;
+    if (!intent && Math.hypot(dx, dy) > INTENT_THRESHOLD) {
       intent = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
     }
-    if (intent === "h") {
-      rail.scrollLeft += dx;
-      lastX = event.clientX;
-      event.preventDefault();
-    } else if (intent === "v") {
-      appFrame.scrollTop += dy;
+    if (intent === "v") {
+      /* 纵向：页面滚动 */
+      const delta = lastY - event.clientY;
+      appFrame.scrollTop += delta;
       lastY = event.clientY;
       event.preventDefault();
-    }
-  });
-
-  messageList.addEventListener("pointerup", (event) => {
-    if (intent === "h") {
-      const railBox = rail.getBoundingClientRect();
-      const center = railBox.left + railBox.width / 2;
-      let closest = null, closestDist = Infinity;
-      contactCards().forEach((card) => {
-        const box = card.getBoundingClientRect();
-        const d = Math.abs(center - (box.left + box.width / 2));
-        if (d < closestDist) { closest = card; closestDist = d; }
-      });
-      if (closest) closest.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
-    }
-    stop();
-  });
-  messageList.addEventListener("pointercancel", stop);
-})();
-
-/* ── 聊天区 ↔ 头像列表 左右滑动联动 ── */
-(function bindChatRailSync() {
-  let activePointer = null;
-  let lastX = 0;
-  let lastY = 0;
-  let intent = null; // "h" | "v" | null
-  const THRESHOLD = 12;
-  const contactCards = () => document.querySelectorAll(".contact-card");
-
-  function stop() {
-    activePointer = null;
-    intent = null;
-  }
-
-  chatArea.addEventListener("pointerdown", (event) => {
-    if (event.target.closest("button, a, input, textarea, select")) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    activePointer = event.pointerId;
-    lastX = event.clientX;
-    lastY = event.clientY;
-    intent = null;
-    chatArea.setPointerCapture?.(event.pointerId);
-  });
-
-  chatArea.addEventListener("pointermove", (event) => {
-    if (activePointer !== event.pointerId) return;
-    const dx = lastX - event.clientX;
-    const dy = lastY - event.clientY;
-    if (!intent && Math.hypot(dx, dy) > THRESHOLD) {
-      intent = Math.abs(dx) > Math.abs(dy) ? "h" : "v";
-    }
-    if (intent === "h") {
-      /* 水平滑动 → 联动头像列表滚动 */
-      rail.scrollLeft += dx;
-      lastX = event.clientX;
-      event.preventDefault();
-    } else if (intent === "v") {
-      /* 垂直滑动 → 页面纵向滚动 */
-      appFrame.scrollTop += dy;
-      lastY = event.clientY;
+    } else if (intent === "h") {
+      /* 横向：吃掉事件防止误触，松手时再切换 */
       event.preventDefault();
     }
   });
 
-  chatArea.addEventListener("pointerup", (event) => {
+  surface.addEventListener("pointerup", (event) => {
     if (intent === "h") {
-      /* 松手后吸附到最近的头像中心 */
-      const railBox = rail.getBoundingClientRect();
-      const center = railBox.left + railBox.width / 2;
-      let closest = null;
-      let closestDist = Infinity;
-      contactCards().forEach((card) => {
-        const box = card.getBoundingClientRect();
-        const d = Math.abs(center - (box.left + box.width / 2));
-        if (d < closestDist) { closest = card; closestDist = d; }
-      });
-      if (closest) {
-        closest.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+      const totalDx = startX - event.clientX;
+      if (Math.abs(totalDx) >= SWIPE_THRESHOLD) {
+        const cards = [...document.querySelectorAll(".contact-card")];
+        const idx = cards.findIndex((c) => c.dataset.role === activeRole);
+        let next = -1;
+        if (idx >= 0) {
+          if (totalDx > 0 && idx < cards.length - 1) next = idx + 1;
+          else if (totalDx < 0 && idx > 0) next = idx - 1;
+        }
+        if (next >= 0) selectRole(cards[next].dataset.role);
       }
     }
     stop();
   });
-  chatArea.addEventListener("pointercancel", stop);
-})();
+
+  surface.addEventListener("pointercancel", stop);
+}
+
+bindSwipeToSwitch(messageList);
+bindSwipeToSwitch(chatArea);
 
 function takeNextNotification() {
   return notificationQueue.shift() || null;
