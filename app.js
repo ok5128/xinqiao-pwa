@@ -396,7 +396,6 @@ const appFrame = document.querySelector(".app-frame");
 const systemInlinePage = document.querySelector("#systemInlinePage");
 const digitalHumanView = document.querySelector("#digitalHumanView");
 const digitalHumanChat = document.querySelector("#digitalHumanChat");
-const live2dCanvas = document.querySelector("#live2dCanvas");
 
 const deleteThreshold = 112;
 const holdToRecordMs = 650;
@@ -454,9 +453,11 @@ function _warmUpSpeech() {
   if (_speechWarmed || !("speechSynthesis" in window)) return;
   _speechWarmed = true;
   _preloadVoices();
-  /* 用一个静音utterance激活引擎（iOS必须从用户手势内触发一次speak） */
-  const warm = new SpeechSynthesisUtterance("");
+  /* iOS Safari 必须在用户手势内触发一次真实发音的 speak，空字符串不会激活引擎 */
+  const warm = new SpeechSynthesisUtterance(" ");
   warm.volume = 0.01;
+  warm.rate = 10;
+  warm.lang = "zh-CN";
   window.speechSynthesis.speak(warm);
 }
 
@@ -471,17 +472,15 @@ function speakText(text) {
 
   if (!("speechSynthesis" in window)) return;
 
-  /* iOS Safari: 某些版本在speak后约15秒会自动暂停，resume可恢复 */
   window.speechSynthesis.cancel();
-  window.speechSynthesis.resume();
 
   const utterance = new SpeechSynthesisUtterance(text);
   /* 优先使用缓存的中文语音 */
   const voices = _zhVoices.length ? _zhVoices : window.speechSynthesis.getVoices().filter((v) => /zh|cmn|chinese|mandarin/i.test(v.lang));
   if (voices.length) utterance.voice = voices[0];
   utterance.lang = "zh-CN";
-  utterance.rate = 0.96;
-  utterance.pitch = 1.02;
+  utterance.rate = _getDhVoiceRate();
+  utterance.pitch = _getDhVoicePitch();
   utterance.volume = 1;
 
   /* 口型同步 */
@@ -1070,8 +1069,22 @@ let _l2dModel = null;
 let _l2dInitialized = false;
 
 const L2D_MODELS = [
-  { name: "仙狐", url: "https://cdn.jsdelivr.net/gh/Eikanya/Live2d-model@master/Live2D/Senko_Normals/senko.model3.json" },
+  { id: "senko", name: "仙狐", url: "https://cdn.jsdelivr.net/gh/Eikanya/Live2d-model@master/Live2D/Senko_Normals/senko.model3.json", thumb: "🦊" },
+  { id: "shizuku", name: "雫", url: "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/shizuku/shizuku.model.json", thumb: "👩" },
+  { id: "haru", name: "春", url: "https://cdn.jsdelivr.net/gh/guansss/pixi-live2d-display/test/assets/haru/haru_greeter_t03.model3.json", thumb: "🌸" },
 ];
+
+/* 数字分身设置（localStorage 持久化） */
+const _dhSettings = JSON.parse(localStorage.getItem("dhSettings") || "{}");
+function _saveDhSettings() { localStorage.setItem("dhSettings", JSON.stringify(_dhSettings)); }
+
+function _getDhModel() {
+  const id = _dhSettings.modelId || "senko";
+  return L2D_MODELS.find(m => m.id === id) || L2D_MODELS[0];
+}
+function _getDhScale() { return _dhSettings.scale || 1; }
+function _getDhVoiceRate() { return _dhSettings.voiceRate || 0.96; }
+function _getDhVoicePitch() { return _dhSettings.voicePitch || 1.02; }
 
 async function initLive2D() {
   if (_l2dInitialized) return;
@@ -1093,9 +1106,17 @@ async function initLive2D() {
     const w = rect.width || 360;
     const h = rect.height || 440;
 
+    /* 如果之前的 canvas 被 PIXI destroy 破坏了，重建一个 */
+    let canvas = document.getElementById("live2dCanvas");
+    if (!canvas) {
+      canvas = document.createElement("canvas");
+      canvas.id = "live2dCanvas";
+      digitalHumanView.insertBefore(canvas, digitalHumanView.firstChild);
+    }
+
     /* PixiJS v7: 透明背景，只显示角色主体 */
     _l2dApp = new PIXI.Application({
-      view: live2dCanvas,
+      view: canvas,
       width: w,
       height: h,
       backgroundAlpha: 0,
@@ -1104,13 +1125,14 @@ async function initLive2D() {
     });
 
     const Live2DModel = PIXI.live2d.Live2DModel;
-    const modelConfig = L2D_MODELS[0];
+    const modelConfig = _getDhModel();
+    const userScale = _getDhScale();
 
     Live2DModel.from(modelConfig.url, { autoInteract: false })
       .then((model) => {
         _l2dModel = model;
-        const scale = Math.min(h * 0.85 / model.height, w * 0.9 / model.width);
-        model.scale.set(scale);
+        const baseScale = Math.min(h * 0.85 / model.height, w * 0.9 / model.width);
+        model.scale.set(baseScale * userScale);
         model.anchor.set(0.5, 0.5);
         model.x = w / 2;
         model.y = h * 0.42;
@@ -1144,11 +1166,19 @@ function destroyLive2D() {
       _l2dModel = null;
     }
     if (_l2dApp) {
-      _l2dApp.destroy(true, { children: true });
+      /* 不 destroy canvas，只清空 stage，保留 canvas DOM 供下次复用 */
+      try { _l2dApp.stage.removeChildren(); } catch(_) {}
+      _l2dApp.destroy(true, { children: true, texture: true });
       _l2dApp = null;
     }
   } catch (_) {}
   _l2dLipValue = 0;
+  /* PIXI destroy 会移除 canvas，需要重新插入一个空 canvas */
+  if (!document.getElementById("live2dCanvas")) {
+    const c = document.createElement("canvas");
+    c.id = "live2dCanvas";
+    digitalHumanView.insertBefore(c, digitalHumanView.firstChild);
+  }
 }
 
 /* 数字分身 TTS 口型同步 */
@@ -1179,7 +1209,141 @@ function renderDigitalHumanChat() {
     div.textContent = msg.text;
     digitalHumanChat.appendChild(div);
   });
+
+  /* 设置按钮 */
+  const settingsBtn = document.createElement("button");
+  settingsBtn.className = "dh-settings-toggle";
+  settingsBtn.textContent = "⚙";
+  settingsBtn.title = "数字分身设置";
+  settingsBtn.style.cssText = "position:absolute;top:10px;right:10px;z-index:10;width:32px;height:32px;border-radius:50%;border:none;background:rgba(255,255,255,0.15);color:#fff;font-size:16px;cursor:pointer;backdrop-filter:blur(6px);";
+  settingsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleDhSettings(); });
+  digitalHumanChat.appendChild(settingsBtn);
+
   digitalHumanChat.scrollTop = digitalHumanChat.scrollHeight;
+}
+
+/* ── 数字分身设置面板 ── */
+let _dhSettingsOpen = false;
+
+function toggleDhSettings() {
+  _dhSettingsOpen = !_dhSettingsOpen;
+  _renderDhSettingsPanel();
+}
+
+function _renderDhSettingsPanel() {
+  let panel = document.getElementById("dhSettingsPanel");
+  if (!_dhSettingsOpen) { panel?.remove(); return; }
+
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "dhSettingsPanel";
+    digitalHumanView.appendChild(panel);
+  }
+
+  const currentModel = _getDhModel();
+  const scale = _getDhScale();
+  const rate = _getDhVoiceRate();
+  const pitch = _getDhVoicePitch();
+
+  panel.style.cssText = "position:absolute;top:0;left:0;right:0;bottom:0;z-index:20;background:rgba(10,10,20,0.88);backdrop-filter:blur(12px);padding:20px 16px;overflow-y:auto;color:#fff;font-size:14px;display:flex;flex-direction:column;gap:16px;";
+
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <h3 style="margin:0;font-size:16px;">数字分身设置</h3>
+      <button id="dhSettingsClose" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+    </div>
+
+    <section>
+      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">选择形象</label>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        ${L2D_MODELS.map(m => `
+          <button class="dh-model-btn" data-model="${m.id}" style="
+            flex:1;min-width:80px;padding:10px 8px;border-radius:12px;border:2px solid ${m.id === currentModel.id ? '#6488ff' : 'rgba(255,255,255,0.15)'};
+            background:${m.id === currentModel.id ? 'rgba(100,136,255,0.2)' : 'rgba(255,255,255,0.05)'};
+            color:#fff;cursor:pointer;text-align:center;transition:all .2s;
+          ">
+            <div style="font-size:28px;margin-bottom:4px;">${m.thumb}</div>
+            <div style="font-size:12px;">${m.name}</div>
+          </button>
+        `).join("")}
+      </div>
+    </section>
+
+    <section>
+      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">大小 <span id="dhScaleVal">${(scale * 100).toFixed(0)}%</span></label>
+      <input type="range" id="dhScaleSlider" min="0.3" max="2" step="0.1" value="${scale}"
+        style="width:100%;accent-color:#6488ff;">
+    </section>
+
+    <section>
+      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">语速 <span id="dhRateVal">${rate.toFixed(2)}x</span></label>
+      <input type="range" id="dhRateSlider" min="0.5" max="2" step="0.05" value="${rate}"
+        style="width:100%;accent-color:#6488ff;">
+    </section>
+
+    <section>
+      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">音调 <span id="dhPitchVal">${pitch.toFixed(2)}</span></label>
+      <input type="range" id="dhPitchSlider" min="0.5" max="2" step="0.05" value="${pitch}"
+        style="width:100%;accent-color:#6488ff;">
+    </section>
+
+    <button id="dhTestVoice" style="
+      padding:10px;border-radius:12px;border:none;
+      background:rgba(100,136,255,0.3);color:#fff;cursor:pointer;font-size:14px;
+    ">🔊 试听语音</button>
+  `;
+
+  /* 事件绑定 */
+  panel.querySelector("#dhSettingsClose").addEventListener("click", () => { _dhSettingsOpen = false; panel.remove(); });
+
+  panel.querySelectorAll(".dh-model-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      _dhSettings.modelId = btn.dataset.model;
+      _saveDhSettings();
+      /* 重新加载模型 */
+      destroyLive2D();
+      initLive2D();
+      _renderDhSettingsPanel();
+    });
+  });
+
+  const scaleSlider = panel.querySelector("#dhScaleSlider");
+  const scaleVal = panel.querySelector("#dhScaleVal");
+  scaleSlider.addEventListener("input", () => {
+    const v = parseFloat(scaleSlider.value);
+    _dhSettings.scale = v;
+    scaleVal.textContent = (v * 100).toFixed(0) + "%";
+    _saveDhSettings();
+    /* 实时调整模型大小 */
+    if (_l2dModel && _l2dApp) {
+      const rect = digitalHumanView.getBoundingClientRect();
+      const h = rect.height || 440, w = rect.width || 360;
+      const baseScale = Math.min(h * 0.85 / _l2dModel.height, w * 0.9 / _l2dModel.width);
+      _l2dModel.scale.set(baseScale * v);
+    }
+  });
+
+  const rateSlider = panel.querySelector("#dhRateSlider");
+  const rateVal = panel.querySelector("#dhRateVal");
+  rateSlider.addEventListener("input", () => {
+    const v = parseFloat(rateSlider.value);
+    _dhSettings.voiceRate = v;
+    rateVal.textContent = v.toFixed(2) + "x";
+    _saveDhSettings();
+  });
+
+  const pitchSlider = panel.querySelector("#dhPitchSlider");
+  const pitchVal = panel.querySelector("#dhPitchVal");
+  pitchSlider.addEventListener("input", () => {
+    const v = parseFloat(pitchSlider.value);
+    _dhSettings.voicePitch = v;
+    pitchVal.textContent = v.toFixed(2);
+    _saveDhSettings();
+  });
+
+  panel.querySelector("#dhTestVoice").addEventListener("click", () => {
+    speakText("你好，这是数字分身的语音测试。");
+  });
 }
 
 function takeNextNotification() {
@@ -1962,213 +2126,4 @@ squareStage.addEventListener("pointerdown", (event) => {
   squareStartY = event.clientY;
   squareVerticalIntent = false;
   squareHorizontalIntent = false;
-  squareStage.setPointerCapture(event.pointerId);
-});
-
-squareStage.addEventListener("pointermove", (event) => {
-  if (!squareTracking) return;
-  const deltaX = event.clientX - squareStartX;
-  const deltaY = event.clientY - squareStartY;
-  if (!squareVerticalIntent && !squareHorizontalIntent && Math.hypot(deltaX, deltaY) > 10) {
-    squareVerticalIntent = Math.abs(deltaY) > Math.abs(deltaX);
-    squareHorizontalIntent = !squareVerticalIntent;
-  }
-});
-
-squareStage.addEventListener("pointerup", (event) => {
-  if (!squareTracking) return;
-  squareTracking = false;
-  const deltaX = event.clientX - squareStartX;
-  const deltaY = event.clientY - squareStartY;
-  if (squareVerticalIntent && Math.abs(deltaY) > 42) {
-    closeSquareDetail();
-    return;
-  }
-  if (!squareHorizontalIntent || deltaX > -42) return;
-  stepSquare();
-});
-
-squareStage.addEventListener("pointercancel", () => {
-  squareTracking = false;
-  squareVerticalIntent = false;
-  squareHorizontalIntent = false;
-});
-
-respondButton.addEventListener("click", (event) => {
-  event.stopPropagation();
-  openRespondDialog();
-});
-
-closeRespond.addEventListener("click", closeRespondDialog);
-respondDialog.addEventListener("click", (event) => {
-  if (event.target === respondDialog) closeRespondDialog();
-});
-
-sendRespondButton.addEventListener("click", () => {
-  closeRespondDialog();
-  showComposerHint("回应已发送");
-});
-
-[dynamicCard, ...document.querySelectorAll(".square-card")].forEach(bindLongPressMenu);
-
-moduleMenuDialog.addEventListener("click", (event) => {
-  if (event.target === moduleMenuDialog) moduleMenuDialog.close();
-});
-
-bindAccountButton?.addEventListener("click", () => {
-  bindAccountDialog.showModal();
-});
-
-closeBindAccount?.addEventListener("click", () => {
-  bindAccountDialog.close();
-});
-
-bindAccountDialog?.addEventListener("click", (event) => {
-  if (event.target === bindAccountDialog) bindAccountDialog.close();
-});
-
-function handleInlineSystemAction(event) {
-  const roleButton = event.target.closest("[data-inline-role]");
-  if (roleButton?.dataset.inlineRole) {
-    selectRole(roleButton.dataset.inlineRole);
-    return;
-  }
-
-  const privacyButton = event.target.closest(".privacy-segment button");
-  if (privacyButton) {
-    privacyButton.closest(".privacy-segment")?.querySelectorAll("button").forEach((item) => {
-      item.classList.toggle("is-selected", item === privacyButton);
-      item.setAttribute("aria-pressed", item === privacyButton ? "true" : "false");
-    });
-    showComposerHint(`可见范围：${privacyButton.textContent.trim()}`);
-    return;
-  }
-
-  const demoButton = event.target.closest("[data-engine-demo]");
-  if (demoButton) {
-    runEngineDemo(demoButton.dataset.engineDemo);
-    return;
-  }
-
-  const settingsButton = event.target.closest("[data-inline-settings-action]");
-  if (!settingsButton) return;
-  const label = {
-    bind: "绑定账号入口已准备",
-    qr: "二维码待接入",
-    export: "导出数据请求已准备",
-    logout: "已退出当前绑定状态"
-  }[settingsButton.dataset.inlineSettingsAction] || "设置已处理";
-  showComposerHint(label);
-}
-
-chatArea.addEventListener("click", handleInlineSystemAction);
-systemInlinePage.addEventListener("click", handleInlineSystemAction);
-
-document.querySelectorAll(".privacy-segment button").forEach((button) => {
-  button.addEventListener("click", () => {
-    document.querySelectorAll(".privacy-segment button").forEach((item) => {
-      item.classList.toggle("is-selected", item === button);
-      item.setAttribute("aria-pressed", item === button ? "true" : "false");
-    });
-    showComposerHint(`可见范围：${button.textContent.trim()}`);
-  });
-});
-
-document.querySelectorAll("[data-settings-action]").forEach((button) => {
-  button.addEventListener("click", () => {
-    const label = {
-      qr: "二维码待接入",
-      export: "导出数据请求已准备",
-      delete: "删除账号需要再次确认",
-      logout: "已退出当前绑定状态"
-    }[button.dataset.settingsAction] || "设置已处理";
-    showComposerHint(label);
-  });
-});
-
-document.querySelectorAll("[data-module-menu-action]").forEach((button) => {
-  button.addEventListener("click", () => {
-    if (!activeModuleElement || !activeModuleWrapper) return;
-    const action = button.dataset.moduleMenuAction;
-    if (action === "grow") setModuleSize(activeModuleWrapper, "large");
-    if (action === "shrink") setModuleSize(activeModuleWrapper, "small");
-    if (action === "delete") {
-      const entry = moduleWrappers().find((item) => item.wrapper === activeModuleWrapper);
-      if (entry) {
-        currentModuleLayout()[entry.key] ||= {};
-        currentModuleLayout()[entry.key].hidden = true;
-      }
-      activeModuleWrapper.hidden = true;
-    }
-    moduleMenuDialog.close();
-  });
-});
-
-let dynamicStartX = 0;
-let dynamicStartY = 0;
-let dynamicTracking = false;
-let dynamicVerticalIntent = false;
-let dynamicHorizontalIntent = false;
-
-dynamicStage.addEventListener("pointerdown", (event) => {
-  dynamicTracking = true;
-  dynamicStartX = event.clientX;
-  dynamicStartY = event.clientY;
-  dynamicVerticalIntent = false;
-  dynamicHorizontalIntent = false;
-  dynamicDetail.classList.add("is-dragging");
-  dynamicStage.setPointerCapture(event.pointerId);
-});
-
-dynamicStage.addEventListener("pointermove", (event) => {
-  if (!dynamicTracking) return;
-  const deltaX = event.clientX - dynamicStartX;
-  const deltaY = event.clientY - dynamicStartY;
-  if (!dynamicVerticalIntent && !dynamicHorizontalIntent && Math.hypot(deltaX, deltaY) > 10) {
-    dynamicVerticalIntent = Math.abs(deltaY) > Math.abs(deltaX);
-    dynamicHorizontalIntent = !dynamicVerticalIntent;
-  }
-  if (!dynamicVerticalIntent) return;
-  event.preventDefault();
-  const offsetY = Math.max(-180, Math.min(180, deltaY));
-  const opacity = Math.max(0.18, 1 - Math.abs(offsetY) / 180);
-  dynamicDetail.style.setProperty("--detail-y", `${offsetY}px`);
-  dynamicDetail.style.setProperty("--detail-opacity", opacity.toFixed(3));
-});
-
-dynamicStage.addEventListener("pointerup", (event) => {
-  if (!dynamicTracking) return;
-  dynamicTracking = false;
-  dynamicDetail.classList.remove("is-dragging");
-  const deltaX = event.clientX - dynamicStartX;
-  const deltaY = event.clientY - dynamicStartY;
-  if (dynamicVerticalIntent && Math.abs(deltaY) > 58) {
-    closeDynamicDetail();
-    return;
-  }
-  dynamicDetail.style.removeProperty("--detail-y");
-  dynamicDetail.style.removeProperty("--detail-opacity");
-  if (dynamicHorizontalIntent && deltaX <= -42) stepDynamic(1);
-});
-
-dynamicStage.addEventListener("pointercancel", () => {
-  dynamicTracking = false;
-  dynamicDetail.classList.remove("is-dragging");
-  dynamicDetail.style.removeProperty("--detail-y");
-  dynamicDetail.style.removeProperty("--detail-opacity");
-});
-
-requestAnimationFrame(() => {
-  /* Worker引擎已移除 */
-  document.querySelector('[data-role="settings"]')?.scrollIntoView({ inline: "center", block: "nearest" });
-  updateContactFocus();
-  renderActiveSurface();
-  renderDynamicPreview();
-  renderSquarePreviews();
-});
-
-if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("./sw.js").catch(() => {});
-  });
-}
+  squareStage.setPointerCa
