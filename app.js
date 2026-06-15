@@ -895,7 +895,7 @@ function renderActiveSurface() {
   composerArea.hidden = false;
   if (isDigitalHuman) {
     renderDigitalHumanChat();
-    initLive2D();
+    /* Live2D已禁用，改用照片数字人 */ initDigitalHumanAvatar();
     /* 进入数字分身时自动播报最近一条收到的消息，验证TTS可用 */
     const dhMessages = chatThreads["digital-human"] || [];
     const lastIncoming = [...dhMessages].reverse().find((m) => m.incoming);
@@ -904,10 +904,10 @@ function renderActiveSurface() {
     }
   } else if (isSystemPage) {
     renderNotifications();
-    destroyLive2D();
+    /* Live2D已禁用 */
   } else {
     renderChat();
-    destroyLive2D();
+    /* Live2D已禁用 */
   }
   if (isSettingsInlinePage) {
     renderInlineSettingsPage();
@@ -1181,6 +1181,161 @@ function destroyLive2D() {
   }
 }
 
+
+/* ── 照片数字人系统（D-ID API / 本地视频驱动） ── */
+let _dhVideoEl = null;
+let _dhAvatarReady = false;
+
+/* NPC 头像列表，用于数字分身选形象 */
+const DH_AVATARS = [
+  { id: "npc1", name: "云岚", img: "./assets/npc-1.png" },
+  { id: "npc2", name: "青梧", img: "./assets/npc-2.png" },
+  { id: "npc3", name: "阿洛", img: "./assets/npc-3.png" },
+  { id: "npc4", name: "弥生", img: "./assets/npc-4.png" },
+  { id: "npc5", name: "星河", img: "./assets/npc-5.png" },
+  { id: "fox", name: "仙狐(Live2D)", img: "./assets/my-digital-human.jpg" },
+];
+
+function initDigitalHumanAvatar() {
+  if (_dhAvatarReady) return;
+  _dhAvatarReady = true;
+
+  /* 确保视图容器存在 */
+  const view = document.getElementById("digitalHumanView");
+  if (!view) return;
+
+  /* 创建照片数字人显示区 */
+  let avatarDisplay = document.getElementById("dhAvatarDisplay");
+  if (!avatarDisplay) {
+    avatarDisplay = document.createElement("div");
+    avatarDisplay.id = "dhAvatarDisplay";
+    avatarDisplay.style.cssText = "width:100%;height:100%;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;";
+    view.insertBefore(avatarDisplay, view.firstChild);
+  }
+
+  /* 静态照片作为默认显示 */
+  const selectedAvatar = DH_AVATARS.find(a => a.id === (_dhSettings.avatarId || "npc1")) || DH_AVATARS[0];
+  renderDhStaticAvatar(selectedAvatar);
+}
+
+function renderDhStaticAvatar(avatar) {
+  const display = document.getElementById("dhAvatarDisplay");
+  if (!display) return;
+
+  /* 清理旧视频 */
+  if (_dhVideoEl) { _dhVideoEl.pause(); _dhVideoEl.src = ""; _dhVideoEl = null; }
+
+  display.innerHTML = `
+    <img src="${avatar.img}" alt="${avatar.name}"
+      style="max-width:85%;max-height:85%;object-fit:contain;border-radius:12px;transition:transform .3s;"
+      id="dhAvatarImg" />
+    <div id="dhAvatarName" style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+      background:rgba(0,0,0,0.5);color:#fff;padding:4px 14px;border-radius:20px;font-size:12px;
+      backdrop-filter:blur(6px);pointer-events:none;">${avatar.name}</div>
+  `;
+}
+
+/* 播放 D-ID 返回的视频（说话动画） */
+function playDhVideo(videoUrl) {
+  const display = document.getElementById("dhAvatarDisplay");
+  if (!display) return;
+
+  /* 暂停旧视频 */
+  if (_dhVideoEl) { _dhVideoEl.pause(); _dhVideoEl = null; }
+
+  _dhVideoEl = document.createElement("video");
+  _dhVideoEl.src = videoUrl;
+  _dhVideoEl.autoplay = true;
+  _dhVideoEl.playsInline = true;
+  _dhVideoEl.muted = false;
+  _dhVideoEl.style.cssText = "max-width:90%;max-height:90%;object-fit:contain;border-radius:12px;";
+  _dhVideoEl.onended = () => {
+    /* 说完话恢复静态照片 */
+    const selectedAvatar = DH_AVATARS.find(a => a.id === (_dhSettings.avatarId || "npc1")) || DH_AVATARS[0];
+    renderDhStaticAvatar(selectedAvatar);
+  };
+
+  display.innerHTML = "";
+  display.appendChild(_dhVideoEl);
+  _dhVideoEl.play().catch(() => {});
+}
+
+/* 调用 D-ID API 生成说话视频 */
+async function generateDidVideo(text) {
+  const apiKey = _dhSettings.didApiKey || "";
+  const avatarUrl = _dhSettings.didAvatarUrl || "";
+
+  if (!apiKey) {
+    console.warn("D-ID API Key 未配置，使用本地 TTS");
+    speakText(text);
+    return null;
+  }
+
+  try {
+    const response = await fetch("https://api.d-id.com/talks", {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${btoa(apiKey + ":")}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        script: {
+          type: "text",
+          provider: { type: "microsoft", voice_id: "zh-CN-XiaoxiaoNeural" },
+          input: text,
+          ssml: "false"
+        },
+        source_url: avatarUrl || "https://create-images-results.d-id.com/Default.png",
+        config: { fluent: "false", pad_audio: "0.0" }
+      })
+    });
+
+    const data = await response.json();
+    if (data.id) {
+      /* 轮询等待视频生成完成 */
+      const resultUrl = await pollDidResult(data.id, apiKey);
+      if (resultUrl) {
+        playDhVideo(resultUrl);
+        return resultUrl;
+      }
+    }
+    console.warn("D-ID 生成失败，回退到本地TTS");
+    speakText(text);
+    return null;
+  } catch (err) {
+    console.warn("D-ID API 调用失败:", err);
+    speakText(text);
+    return null;
+  }
+}
+
+async function pollDidResult(talkId, apiKey) {
+  for (let i = 0; i < 30; i++) {
+    await new Promise(r => setTimeout(r, 2000));
+    try {
+      const res = await fetch(`https://api.d-id.com/talks/${talkId}`, {
+        headers: { "Authorization": `Basic ${btoa(apiKey + ":")}` }
+      });
+      const data = await res.json();
+      if (data.result_url) return data.result_url;
+      if (data.status === "error") return null;
+    } catch (_) { return null; }
+  }
+  return null;
+}
+
+/* 带 API 驱动的 speakText（优先用 D-ID 视频说话，fallback 到本地 TTS） */
+function speakTextWithAvatar(text) {
+  if (!text) return;
+  _stopLipSync?.();
+
+  if (_dhSettings.didApiKey && _dhSettings.didAvatarUrl) {
+    generateDidVideo(text);
+  } else {
+    speakText(text);
+  }
+}
+
 /* 数字分身 TTS 口型同步 */
 let _l2dLipValue = 0;
 
@@ -1240,12 +1395,13 @@ function _renderDhSettingsPanel() {
     digitalHumanView.appendChild(panel);
   }
 
-  const currentModel = _getDhModel();
-  const scale = _getDhScale();
+  const selectedAvatar = DH_AVATARS.find(a => a.id === (_dhSettings.avatarId || "npc1")) || DH_AVATARS[0];
   const rate = _getDhVoiceRate();
   const pitch = _getDhVoicePitch();
+  const didKey = _dhSettings.didApiKey || "";
+  const didUrl = _dhSettings.didAvatarUrl || "";
 
-  panel.style.cssText = "position:absolute;top:0;left:0;right:0;bottom:0;z-index:20;background:rgba(10,10,20,0.88);backdrop-filter:blur(12px);padding:20px 16px;overflow-y:auto;color:#fff;font-size:14px;display:flex;flex-direction:column;gap:16px;";
+  panel.style.cssText = "position:absolute;top:0;left:0;right:0;bottom:0;z-index:20;background:rgba(10,10,20,0.88);backdrop-filter:blur(12px);padding:20px 16px;overflow-y:auto;color:#fff;font-size:14px;display:flex;flex-direction:column;gap:14px;";
 
   panel.innerHTML = `
     <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -1255,24 +1411,18 @@ function _renderDhSettingsPanel() {
 
     <section>
       <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">选择形象</label>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        ${L2D_MODELS.map(m => `
-          <button class="dh-model-btn" data-model="${m.id}" style="
-            flex:1;min-width:80px;padding:10px 8px;border-radius:12px;border:2px solid ${m.id === currentModel.id ? '#6488ff' : 'rgba(255,255,255,0.15)'};
-            background:${m.id === currentModel.id ? 'rgba(100,136,255,0.2)' : 'rgba(255,255,255,0.05)'};
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        ${DH_AVATARS.map(a => `
+          <button class="dh-avatar-btn" data-avatar="${a.id}" style="
+            flex:1;min-width:60px;padding:8px 6px;border-radius:12px;border:2px solid ${a.id === selectedAvatar.id ? '#6488ff' : 'rgba(255,255,255,0.15)'};
+            background:${a.id === selectedAvatar.id ? 'rgba(100,136,255,0.2)' : 'rgba(255,255,255,0.05)'};
             color:#fff;cursor:pointer;text-align:center;transition:all .2s;
           ">
-            <div style="font-size:28px;margin-bottom:4px;">${m.thumb}</div>
-            <div style="font-size:12px;">${m.name}</div>
+            <img src="${a.img}" style="width:40px;height:40px;border-radius:50%;object-fit:cover;margin-bottom:4px;" />
+            <div style="font-size:11px;">${a.name}</div>
           </button>
         `).join("")}
       </div>
-    </section>
-
-    <section>
-      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">大小 <span id="dhScaleVal">${(scale * 100).toFixed(0)}%</span></label>
-      <input type="range" id="dhScaleSlider" min="0.3" max="2" step="0.1" value="${scale}"
-        style="width:100%;accent-color:#6488ff;">
     </section>
 
     <section>
@@ -1287,40 +1437,41 @@ function _renderDhSettingsPanel() {
         style="width:100%;accent-color:#6488ff;">
     </section>
 
+    <section style="border-top:1px solid rgba(255,255,255,0.1);padding-top:12px;">
+      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">D-ID API Key（留空则用本地语音）</label>
+      <input type="text" id="dhDidKey" value="${didKey}" placeholder="填入 D-ID API Key"
+        style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:#fff;font-size:13px;">
+    </section>
+
+    <section>
+      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">D-ID 头像图片URL</label>
+      <input type="text" id="dhDidUrl" value="${didUrl}" placeholder="https://example.com/photo.jpg"
+        style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:#fff;font-size:13px;">
+    </section>
+
     <button id="dhTestVoice" style="
       padding:10px;border-radius:12px;border:none;
       background:rgba(100,136,255,0.3);color:#fff;cursor:pointer;font-size:14px;
-    ">🔊 试听语音</button>
+    ">🔊 试听语音（本地TTS）</button>
+
+    ${didKey ? `
+    <button id="dhTestDid" style="
+      padding:10px;border-radius:12px;border:none;
+      background:rgba(80,200,120,0.3);color:#fff;cursor:pointer;font-size:14px;
+    ">🎬 测试 D-ID 数字人说话</button>
+    ` : ""}
   `;
 
   /* 事件绑定 */
   panel.querySelector("#dhSettingsClose").addEventListener("click", () => { _dhSettingsOpen = false; panel.remove(); });
 
-  panel.querySelectorAll(".dh-model-btn").forEach(btn => {
+  panel.querySelectorAll(".dh-avatar-btn").forEach(btn => {
     btn.addEventListener("click", () => {
-      _dhSettings.modelId = btn.dataset.model;
+      _dhSettings.avatarId = btn.dataset.avatar;
       _saveDhSettings();
-      /* 重新加载模型 */
-      destroyLive2D();
-      initLive2D();
+      renderDhStaticAvatar(DH_AVATARS.find(a => a.id === btn.dataset.avatar) || DH_AVATARS[0]);
       _renderDhSettingsPanel();
     });
-  });
-
-  const scaleSlider = panel.querySelector("#dhScaleSlider");
-  const scaleVal = panel.querySelector("#dhScaleVal");
-  scaleSlider.addEventListener("input", () => {
-    const v = parseFloat(scaleSlider.value);
-    _dhSettings.scale = v;
-    scaleVal.textContent = (v * 100).toFixed(0) + "%";
-    _saveDhSettings();
-    /* 实时调整模型大小 */
-    if (_l2dModel && _l2dApp) {
-      const rect = digitalHumanView.getBoundingClientRect();
-      const h = rect.height || 440, w = rect.width || 360;
-      const baseScale = Math.min(h * 0.85 / _l2dModel.height, w * 0.9 / _l2dModel.width);
-      _l2dModel.scale.set(baseScale * v);
-    }
   });
 
   const rateSlider = panel.querySelector("#dhRateSlider");
@@ -1341,10 +1492,30 @@ function _renderDhSettingsPanel() {
     _saveDhSettings();
   });
 
+  const didKeyInput = panel.querySelector("#dhDidKey");
+  didKeyInput.addEventListener("change", () => {
+    _dhSettings.didApiKey = didKeyInput.value.trim();
+    _saveDhSettings();
+  });
+
+  const didUrlInput = panel.querySelector("#dhDidUrl");
+  didUrlInput.addEventListener("change", () => {
+    _dhSettings.didAvatarUrl = didUrlInput.value.trim();
+    _saveDhSettings();
+  });
+
   panel.querySelector("#dhTestVoice").addEventListener("click", () => {
     speakText("你好，这是数字分身的语音测试。");
   });
+
+  const testDidBtn = panel.querySelector("#dhTestDid");
+  if (testDidBtn) {
+    testDidBtn.addEventListener("click", () => {
+      generateDidVideo("你好，我是你的数字分身，很高兴认识你。");
+    });
+  }
 }
+
 
 function takeNextNotification() {
   return notificationQueue.shift() || null;
@@ -2126,4 +2297,213 @@ squareStage.addEventListener("pointerdown", (event) => {
   squareStartY = event.clientY;
   squareVerticalIntent = false;
   squareHorizontalIntent = false;
-  squareStage.setPointerCa
+  squareStage.setPointerCapture(event.pointerId);
+});
+
+squareStage.addEventListener("pointermove", (event) => {
+  if (!squareTracking) return;
+  const deltaX = event.clientX - squareStartX;
+  const deltaY = event.clientY - squareStartY;
+  if (!squareVerticalIntent && !squareHorizontalIntent && Math.hypot(deltaX, deltaY) > 10) {
+    squareVerticalIntent = Math.abs(deltaY) > Math.abs(deltaX);
+    squareHorizontalIntent = !squareVerticalIntent;
+  }
+});
+
+squareStage.addEventListener("pointerup", (event) => {
+  if (!squareTracking) return;
+  squareTracking = false;
+  const deltaX = event.clientX - squareStartX;
+  const deltaY = event.clientY - squareStartY;
+  if (squareVerticalIntent && Math.abs(deltaY) > 42) {
+    closeSquareDetail();
+    return;
+  }
+  if (!squareHorizontalIntent || deltaX > -42) return;
+  stepSquare();
+});
+
+squareStage.addEventListener("pointercancel", () => {
+  squareTracking = false;
+  squareVerticalIntent = false;
+  squareHorizontalIntent = false;
+});
+
+respondButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  openRespondDialog();
+});
+
+closeRespond.addEventListener("click", closeRespondDialog);
+respondDialog.addEventListener("click", (event) => {
+  if (event.target === respondDialog) closeRespondDialog();
+});
+
+sendRespondButton.addEventListener("click", () => {
+  closeRespondDialog();
+  showComposerHint("回应已发送");
+});
+
+[dynamicCard, ...document.querySelectorAll(".square-card")].forEach(bindLongPressMenu);
+
+moduleMenuDialog.addEventListener("click", (event) => {
+  if (event.target === moduleMenuDialog) moduleMenuDialog.close();
+});
+
+bindAccountButton?.addEventListener("click", () => {
+  bindAccountDialog.showModal();
+});
+
+closeBindAccount?.addEventListener("click", () => {
+  bindAccountDialog.close();
+});
+
+bindAccountDialog?.addEventListener("click", (event) => {
+  if (event.target === bindAccountDialog) bindAccountDialog.close();
+});
+
+function handleInlineSystemAction(event) {
+  const roleButton = event.target.closest("[data-inline-role]");
+  if (roleButton?.dataset.inlineRole) {
+    selectRole(roleButton.dataset.inlineRole);
+    return;
+  }
+
+  const privacyButton = event.target.closest(".privacy-segment button");
+  if (privacyButton) {
+    privacyButton.closest(".privacy-segment")?.querySelectorAll("button").forEach((item) => {
+      item.classList.toggle("is-selected", item === privacyButton);
+      item.setAttribute("aria-pressed", item === privacyButton ? "true" : "false");
+    });
+    showComposerHint(`可见范围：${privacyButton.textContent.trim()}`);
+    return;
+  }
+
+  const demoButton = event.target.closest("[data-engine-demo]");
+  if (demoButton) {
+    runEngineDemo(demoButton.dataset.engineDemo);
+    return;
+  }
+
+  const settingsButton = event.target.closest("[data-inline-settings-action]");
+  if (!settingsButton) return;
+  const label = {
+    bind: "绑定账号入口已准备",
+    qr: "二维码待接入",
+    export: "导出数据请求已准备",
+    logout: "已退出当前绑定状态"
+  }[settingsButton.dataset.inlineSettingsAction] || "设置已处理";
+  showComposerHint(label);
+}
+
+chatArea.addEventListener("click", handleInlineSystemAction);
+systemInlinePage.addEventListener("click", handleInlineSystemAction);
+
+document.querySelectorAll(".privacy-segment button").forEach((button) => {
+  button.addEventListener("click", () => {
+    document.querySelectorAll(".privacy-segment button").forEach((item) => {
+      item.classList.toggle("is-selected", item === button);
+      item.setAttribute("aria-pressed", item === button ? "true" : "false");
+    });
+    showComposerHint(`可见范围：${button.textContent.trim()}`);
+  });
+});
+
+document.querySelectorAll("[data-settings-action]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const label = {
+      qr: "二维码待接入",
+      export: "导出数据请求已准备",
+      delete: "删除账号需要再次确认",
+      logout: "已退出当前绑定状态"
+    }[button.dataset.settingsAction] || "设置已处理";
+    showComposerHint(label);
+  });
+});
+
+document.querySelectorAll("[data-module-menu-action]").forEach((button) => {
+  button.addEventListener("click", () => {
+    if (!activeModuleElement || !activeModuleWrapper) return;
+    const action = button.dataset.moduleMenuAction;
+    if (action === "grow") setModuleSize(activeModuleWrapper, "large");
+    if (action === "shrink") setModuleSize(activeModuleWrapper, "small");
+    if (action === "delete") {
+      const entry = moduleWrappers().find((item) => item.wrapper === activeModuleWrapper);
+      if (entry) {
+        currentModuleLayout()[entry.key] ||= {};
+        currentModuleLayout()[entry.key].hidden = true;
+      }
+      activeModuleWrapper.hidden = true;
+    }
+    moduleMenuDialog.close();
+  });
+});
+
+let dynamicStartX = 0;
+let dynamicStartY = 0;
+let dynamicTracking = false;
+let dynamicVerticalIntent = false;
+let dynamicHorizontalIntent = false;
+
+dynamicStage.addEventListener("pointerdown", (event) => {
+  dynamicTracking = true;
+  dynamicStartX = event.clientX;
+  dynamicStartY = event.clientY;
+  dynamicVerticalIntent = false;
+  dynamicHorizontalIntent = false;
+  dynamicDetail.classList.add("is-dragging");
+  dynamicStage.setPointerCapture(event.pointerId);
+});
+
+dynamicStage.addEventListener("pointermove", (event) => {
+  if (!dynamicTracking) return;
+  const deltaX = event.clientX - dynamicStartX;
+  const deltaY = event.clientY - dynamicStartY;
+  if (!dynamicVerticalIntent && !dynamicHorizontalIntent && Math.hypot(deltaX, deltaY) > 10) {
+    dynamicVerticalIntent = Math.abs(deltaY) > Math.abs(deltaX);
+    dynamicHorizontalIntent = !dynamicVerticalIntent;
+  }
+  if (!dynamicVerticalIntent) return;
+  event.preventDefault();
+  const offsetY = Math.max(-180, Math.min(180, deltaY));
+  const opacity = Math.max(0.18, 1 - Math.abs(offsetY) / 180);
+  dynamicDetail.style.setProperty("--detail-y", `${offsetY}px`);
+  dynamicDetail.style.setProperty("--detail-opacity", opacity.toFixed(3));
+});
+
+dynamicStage.addEventListener("pointerup", (event) => {
+  if (!dynamicTracking) return;
+  dynamicTracking = false;
+  dynamicDetail.classList.remove("is-dragging");
+  const deltaX = event.clientX - dynamicStartX;
+  const deltaY = event.clientY - dynamicStartY;
+  if (dynamicVerticalIntent && Math.abs(deltaY) > 58) {
+    closeDynamicDetail();
+    return;
+  }
+  dynamicDetail.style.removeProperty("--detail-y");
+  dynamicDetail.style.removeProperty("--detail-opacity");
+  if (dynamicHorizontalIntent && deltaX <= -42) stepDynamic(1);
+});
+
+dynamicStage.addEventListener("pointercancel", () => {
+  dynamicTracking = false;
+  dynamicDetail.classList.remove("is-dragging");
+  dynamicDetail.style.removeProperty("--detail-y");
+  dynamicDetail.style.removeProperty("--detail-opacity");
+});
+
+requestAnimationFrame(() => {
+  /* Worker引擎已移除 */
+  document.querySelector('[data-role="settings"]')?.scrollIntoView({ inline: "center", block: "nearest" });
+  updateContactFocus();
+  renderActiveSurface();
+  renderDynamicPreview();
+  renderSquarePreviews();
+});
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("./sw.js").catch(() => {});
+  });
+}
