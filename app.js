@@ -1673,7 +1673,11 @@ function startRecording() {
   composerArea.classList.remove("show-hint");
   composerArea.classList.add("is-recording");
   document.querySelector(".record-hint").textContent = "正在录音";
-  startAudioCapture().catch(() => showComposerHint("麦克风权限不可用"));
+  /* 系统语音识别在 finishRecording 中启动，只有 whisper 回退时才需要先录音频 */
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SpeechRecognition || window._forceWhisper) {
+    startAudioCapture().catch(() => showComposerHint("麦克风权限不可用"));
+  }
   messageInput.blur();
 }
 
@@ -1701,19 +1705,40 @@ async function finishRecording() {
   }
 
   try {
-    showComposerHint("whisper-base 识别中");
-    const audio = await stopAudioCapture();
-    if (!audio) {
-      showComposerHint("没有录到语音");
-      return;
+    /* 使用浏览器内置语音识别（系统级，无需下载模型） */
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (SpeechRecognition && !window._forceWhisper) {
+      showComposerHint("系统语音识别中");
+      const transcript = await new Promise((resolve, reject) => {
+        const recog = new SpeechRecognition();
+        recog.lang = "zh-CN";
+        recog.interimResults = false;
+        recog.maxAlternatives = 1;
+        recog.continuous = false;
+        const timer = setTimeout(() => { recog.stop(); reject(new Error("识别超时")); }, 8000);
+        recog.onresult = (e) => { clearTimeout(timer); resolve(e.results[0][0].transcript || ""); };
+        recog.onerror = (e) => { clearTimeout(timer); reject(e); };
+        recog.onend = () => { clearTimeout(timer); };
+        recog.start();
+      });
+      addChatBubble({ text: transcript || "未识别到文字" });
+      if (transcript) simulateIncomingReply();
+    } else {
+      /* 回退到 whisper（需模型下载） */
+      showComposerHint("whisper-base 识别中");
+      const audio = await stopAudioCapture();
+      if (!audio) {
+        showComposerHint("没有录到语音");
+        return;
+      }
+      const result = await xinqiaoEngine.transcribe({
+        audio,
+        transfer: [audio.buffer]
+      });
+      const transcript = result?.text || "";
+      addChatBubble({ text: transcript || "未识别到文字" });
+      if (transcript) simulateIncomingReply();
     }
-    const result = await xinqiaoEngine.transcribe({
-      audio,
-      transfer: [audio.buffer]
-    });
-    const transcript = result?.text || "";
-    addChatBubble({ text: transcript || "未识别到文字" });
-    if (transcript) simulateIncomingReply();
   } catch (error) {
     addChatBubble({ text: `语音识别失败：${error.message}` });
     showComposerHint("语音识别失败");
