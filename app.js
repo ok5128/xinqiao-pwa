@@ -1227,11 +1227,11 @@ function renderDhStaticAvatar(avatar) {
 
   display.innerHTML = `
     <img src="${avatar.img}" alt="${avatar.name}"
-      style="max-width:85%;max-height:85%;object-fit:contain;border-radius:12px;transition:transform .3s;"
-      id="dhAvatarImg" />
+      style="max-width:85%;max-height:85%;object-fit:contain;border-radius:12px;transition:transform .3s;cursor:pointer;"
+      id="dhAvatarImg" onclick="speakTextWithAvatar((chatThreads['digital-human']||[]).slice().reverse().find(m=>m.incoming)?.text||'你好，我是${avatar.name}')" />
     <div id="dhAvatarName" style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
       background:rgba(0,0,0,0.5);color:#fff;padding:4px 14px;border-radius:20px;font-size:12px;
-      backdrop-filter:blur(6px);pointer-events:none;">${avatar.name}</div>
+      backdrop-filter:blur(6px);pointer-events:none;">${avatar.name} · 点击说话</div>
   `;
 }
 
@@ -1370,7 +1370,7 @@ function renderDigitalHumanChat() {
   settingsBtn.className = "dh-settings-toggle";
   settingsBtn.textContent = "⚙";
   settingsBtn.title = "数字分身设置";
-  settingsBtn.style.cssText = "position:absolute;top:10px;right:10px;z-index:10;width:32px;height:32px;border-radius:50%;border:none;background:rgba(255,255,255,0.15);color:#fff;font-size:16px;cursor:pointer;backdrop-filter:blur(6px);";
+  settingsBtn.style.cssText = "position:absolute;top:10px;right:10px;z-index:10;width:36px;height:36px;border-radius:50%;border:none;background:rgba(255,255,255,0.2);color:#fff;font-size:18px;cursor:pointer;backdrop-filter:blur(6px);transition:background .2s;";
   settingsBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleDhSettings(); });
   digitalHumanChat.appendChild(settingsBtn);
 
