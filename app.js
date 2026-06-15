@@ -1349,10 +1349,9 @@ async function initLive2D() {
     const w = rect.width || 360;
     const h = rect.height || 440;
 
-    /* PixiJS v8: Application() 无参，init() 异步 */
-    _l2dApp = new PIXI.Application();
-    await _l2dApp.init({
-      canvas: live2dCanvas,
+    /* PixiJS v7: 构造函数直接接受参数 */
+    _l2dApp = new PIXI.Application({
+      view: live2dCanvas,
       width: w,
       height: h,
       backgroundAlpha: 0,
