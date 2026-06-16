@@ -1188,12 +1188,12 @@ let _dhAvatarReady = false;
 
 /* NPC 头像列表，用于数字分身选形象 */
 const DH_AVATARS = [
-  { id: "npc1", name: "云岚", img: "./assets/npc-1.png" },
-  { id: "npc2", name: "青梧", img: "./assets/npc-2.png" },
-  { id: "npc3", name: "阿洛", img: "./assets/npc-3.png" },
-  { id: "npc4", name: "弥生", img: "./assets/npc-4.png" },
-  { id: "npc5", name: "星河", img: "./assets/npc-5.png" },
-  { id: "fox", name: "仙狐(Live2D)", img: "./assets/my-digital-human.jpg" },
+  { id: "npc1", name: "云岚", img: "./assets/npc-1.png", didUrl: "https://ok5128.github.io/xinqiao-pwa/assets/npc-1.png" },
+  { id: "npc2", name: "青梧", img: "./assets/npc-2.png", didUrl: "https://ok5128.github.io/xinqiao-pwa/assets/npc-2.png" },
+  { id: "npc3", name: "阿洛", img: "./assets/npc-3.png", didUrl: "https://ok5128.github.io/xinqiao-pwa/assets/npc-3.png" },
+  { id: "npc4", name: "弥生", img: "./assets/npc-4.png", didUrl: "https://ok5128.github.io/xinqiao-pwa/assets/npc-4.png" },
+  { id: "npc5", name: "星河", img: "./assets/npc-5.png", didUrl: "https://ok5128.github.io/xinqiao-pwa/assets/npc-5.png" },
+  { id: "fox", name: "仙狐", img: "./assets/my-digital-human.jpg", didUrl: "https://ok5128.github.io/xinqiao-pwa/assets/my-digital-human.jpg" },
 ];
 
 function initDigitalHumanAvatar() {
@@ -1261,14 +1261,31 @@ function playDhVideo(videoUrl) {
 }
 
 /* 调用 D-ID API 生成说话视频 */
+let _dhGenerating = false;
+
 async function generateDidVideo(text) {
   const apiKey = _dhSettings.didApiKey || "";
   const avatarUrl = _dhSettings.didAvatarUrl || "";
 
   if (!apiKey) {
     console.warn("D-ID API Key 未配置，使用本地 TTS");
+    _showDhStatus("⚠️ 未配置 API Key，使用本地语音", 3000);
     speakText(text);
     return null;
+  }
+
+  if (_dhGenerating) {
+    console.warn("D-ID 正在生成中，跳过");
+    return null;
+  }
+  _dhGenerating = true;
+  _showDhStatus("🔄 D-ID 数字人生成中...", 60000);
+
+  /* D-ID source_url 必须是公网可访问的图片 */
+  let sourceUrl = avatarUrl;
+  if (!sourceUrl || sourceUrl.startsWith("./") || sourceUrl.startsWith("/")) {
+    /* 没填或本地路径 → 用 D-ID 默认头像 */
+    sourceUrl = "https://create-images-results.d-id.com/Default.png";
   }
 
   try {
@@ -1285,32 +1302,46 @@ async function generateDidVideo(text) {
           input: text,
           ssml: "false"
         },
-        source_url: avatarUrl || "https://create-images-results.d-id.com/Default.png",
+        source_url: sourceUrl,
         config: { fluent: "false", pad_audio: "0.0" }
       })
     });
 
     const data = await response.json();
+    if (!response.ok) {
+      const errMsg = data?.description || data?.message || `HTTP ${response.status}`;
+      console.warn("D-ID API 错误:", errMsg);
+      _showDhStatus("❌ D-ID 错误: " + errMsg, 5000);
+      speakText(text);
+      _dhGenerating = false;
+      return null;
+    }
     if (data.id) {
-      /* 轮询等待视频生成完成 */
+      _showDhStatus("🔄 D-ID 处理中，请稍候...", 60000);
       const resultUrl = await pollDidResult(data.id, apiKey);
       if (resultUrl) {
+        _showDhStatus("✅ 数字人说话了！", 2000);
         playDhVideo(resultUrl);
+        _dhGenerating = false;
         return resultUrl;
       }
     }
     console.warn("D-ID 生成失败，回退到本地TTS");
+    _showDhStatus("⚠️ D-ID 生成失败，使用本地语音", 3000);
     speakText(text);
+    _dhGenerating = false;
     return null;
   } catch (err) {
     console.warn("D-ID API 调用失败:", err);
+    _showDhStatus("❌ D-ID 网络错误: " + err.message, 4000);
     speakText(text);
+    _dhGenerating = false;
     return null;
   }
 }
 
 async function pollDidResult(talkId, apiKey) {
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < 60; i++) {  /* 最多等 2 分钟 */
     await new Promise(r => setTimeout(r, 2000));
     try {
       const res = await fetch(`https://api.d-id.com/talks/${talkId}`, {
@@ -1318,10 +1349,29 @@ async function pollDidResult(talkId, apiKey) {
       });
       const data = await res.json();
       if (data.result_url) return data.result_url;
-      if (data.status === "error") return null;
+      if (data.status === "error") {
+        console.warn("D-ID talk error:", data);
+        return null;
+      }
     } catch (_) { return null; }
   }
   return null;
+}
+
+/* 状态提示条 */
+function _showDhStatus(msg, duration) {
+  let bar = document.getElementById("dhStatusBar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "dhStatusBar";
+    const view = document.getElementById("digitalHumanView");
+    if (view) view.appendChild(bar);
+  }
+  bar.style.cssText = "position:absolute;top:50px;left:50%;transform:translateX(-50%);z-index:30;padding:8px 18px;border-radius:20px;background:rgba(0,0,0,0.7);color:#fff;font-size:13px;backdrop-filter:blur(8px);pointer-events:none;white-space:nowrap;transition:opacity .3s;";
+  bar.textContent = msg;
+  bar.style.opacity = "1";
+  clearTimeout(bar._timer);
+  bar._timer = setTimeout(() => { bar.style.opacity = "0"; }, duration);
 }
 
 /* 带 API 驱动的 speakText（优先用 D-ID 视频说话，fallback 到本地 TTS） */
@@ -1329,7 +1379,7 @@ function speakTextWithAvatar(text) {
   if (!text) return;
   _stopLipSync?.();
 
-  if (_dhSettings.didApiKey && _dhSettings.didAvatarUrl) {
+  if (_dhSettings.didApiKey) {
     generateDidVideo(text);
   } else {
     speakText(text);
@@ -1444,8 +1494,8 @@ function _renderDhSettingsPanel() {
     </section>
 
     <section>
-      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">D-ID 头像图片URL</label>
-      <input type="text" id="dhDidUrl" value="${didUrl}" placeholder="https://example.com/photo.jpg"
+      <label style="display:block;margin-bottom:8px;opacity:0.7;font-size:12px;">D-ID 头像图片URL（选NPC形象会自动填充，也可手动填写公网图片地址）</label>
+      <input type="text" id="dhDidUrl" value="${didUrl}" placeholder="https://example.com/photo.jpg（公网可访问）"
         style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:#fff;font-size:13px;">
     </section>
 
@@ -1459,7 +1509,7 @@ function _renderDhSettingsPanel() {
       padding:10px;border-radius:12px;border:none;
       background:rgba(80,200,120,0.3);color:#fff;cursor:pointer;font-size:14px;
     ">🎬 测试 D-ID 数字人说话</button>
-    ` : ""}
+    ` : `<div style="opacity:0.5;font-size:12px;text-align:center;">填入 D-ID API Key 后可测试数字人说话</div>`}
   `;
 
   /* 事件绑定 */
@@ -1468,8 +1518,11 @@ function _renderDhSettingsPanel() {
   panel.querySelectorAll(".dh-avatar-btn").forEach(btn => {
     btn.addEventListener("click", () => {
       _dhSettings.avatarId = btn.dataset.avatar;
+      /* 自动填充公网URL给D-ID */
+      const avatar = DH_AVATARS.find(a => a.id === btn.dataset.avatar) || DH_AVATARS[0];
+      if (avatar.didUrl) _dhSettings.didAvatarUrl = avatar.didUrl;
       _saveDhSettings();
-      renderDhStaticAvatar(DH_AVATARS.find(a => a.id === btn.dataset.avatar) || DH_AVATARS[0]);
+      renderDhStaticAvatar(avatar);
       _renderDhSettingsPanel();
     });
   });
